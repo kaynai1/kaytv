@@ -1,0 +1,216 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 产物版本号（不带 v，例如 0.3.0）
+        required: true
+        default: 0.3.0
+
+permissions:
+  contents: write
+
+env:
+  NODE_VERSION: '22'
+
+jobs:
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.pick.outputs.version }}
+      tmdb: ${{ steps.keys.outputs.tmdb }}
+      kanju: ${{ steps.keys.outputs.kanju }}
+      signed: ${{ steps.keys.outputs.signed }}
+    steps:
+      - id: pick
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          if [ -n "$INPUT_VERSION" ]; then
+            echo "version=${INPUT_VERSION#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - id: keys
+        env:
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+          KANJU_SECRET: ${{ secrets.KANJU_SECRET }}
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          note() { [ -n "$1" ] && echo yes || echo no; }
+          echo "tmdb=$(note "$TMDB_API_KEY")" >> "$GITHUB_OUTPUT"
+          echo "kanju=$(note "$KANJU_SECRET")" >> "$GITHUB_OUTPUT"
+          echo "signed=$(note "$KEYSTORE_BASE64")" >> "$GITHUB_OUTPUT"
+          if [ -z "$KANJU_SECRET" ]; then
+            echo "::warning::未配置 KANJU_SECRET，看剧AI 线路在本次构建里不可用"
+          fi
+          if [ -z "$TMDB_API_KEY" ]; then
+            echo "::warning::未配置 TMDB_API_KEY，本次构建没有高清海报与背景图"
+          fi
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::warning::未配置 KEYSTORE_BASE64，APK 将退回 debug 签名（覆盖安装会失败）"
+          fi
+
+  windows:
+    needs: meta
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      VITE_TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+      VITE_KANJU_SECRET: ${{ secrets.KANJU_SECRET }}
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci
+      - run: npm ci
+        working-directory: desktop
+
+      - run: npm run dist
+        working-directory: desktop
+
+      - name: 整理产物名称
+        run: |
+          mkdir -p out
+          cp desktop/release/KayTV-Setup-*.exe "out/KayTV-${{ needs.meta.outputs.version }}-windows-setup.exe"
+          cp desktop/release/KayTV-*-portable.exe "out/KayTV-${{ needs.meta.outputs.version }}-windows-portable.exe"
+          ls -la out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: out/*
+          if-no-files-found: error
+
+  android:
+    needs: meta
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        device: [phone, tv]
+    env:
+      VITE_TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+      VITE_KANJU_SECRET: ${{ secrets.KANJU_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: android-actions/setup-android@v3
+
+      - run: yes | sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - run: npm ci
+      - run: npm ci
+        working-directory: mobile
+
+      - name: 准备签名密钥
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "未配置 KEYSTORE_BASE64，本次使用 debug 签名"
+            exit 0
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/kaytv.p12"
+          keytool -importkeystore \
+            -srckeystore "$RUNNER_TEMP/kaytv.p12" -srcstoretype PKCS12 -srcstorepass "$KEYSTORE_PASSWORD" \
+            -destkeystore "$RUNNER_TEMP/kaytv.jks" -deststoretype JKS -deststorepass "$KEYSTORE_PASSWORD" \
+            -srcalias "${KEY_ALIAS:-kaytv}" -destalias "${KEY_ALIAS:-kaytv}" -noprompt
+          {
+            echo "KAYTV_KEYSTORE=$RUNNER_TEMP/kaytv.jks"
+            echo "KAYTV_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD"
+            echo "KAYTV_KEY_ALIAS=${KEY_ALIAS:-kaytv}"
+            echo "KAYTV_KEY_PASSWORD=${KEY_PASSWORD:-$KEYSTORE_PASSWORD}"
+          } >> "$GITHUB_ENV"
+
+      - run: npm run build -w web
+
+      - name: 同步前端与设备形态
+        working-directory: mobile
+        run: |
+          npm run sync
+          node patch-android.mjs --device=${{ matrix.device }}
+
+      - name: 构建 APK
+        working-directory: mobile/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: 整理产物名称
+        run: |
+          mkdir -p out
+          cp mobile/android/app/build/outputs/apk/release/app-release.apk \
+            "out/KayTV-${{ needs.meta.outputs.version }}-${{ matrix.device }}.apk"
+          ls -la out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-${{ matrix.device }}
+          path: out/*
+          if-no-files-found: error
+
+  release:
+    needs: [meta, windows, android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: staged
+          merge-multiple: true
+
+      - name: 生成校验和
+        run: |
+          cd staged
+          sha256sum KayTV-* > SHA256SUMS.txt
+          ls -la
+          cat SHA256SUMS.txt
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          append_body: true
+          files: staged/*
+          body: |
+            ## 三端安装包
+
+            | 设备 | 文件 | 说明 |
+            | --- | --- | --- |
+            | Windows 电脑 | `KayTV-${{ needs.meta.outputs.version }}-windows-setup.exe` | 安装版，带桌面快捷方式 |
+            | Windows 电脑 | `KayTV-${{ needs.meta.outputs.version }}-windows-portable.exe` | 免安装，双击即用 |
+            | 安卓手机 | `KayTV-${{ needs.meta.outputs.version }}-phone.apk` | 跟随重力旋转，支持触屏 |
+            | 安卓电视 / 机顶盒 | `KayTV-${{ needs.meta.outputs.version }}-tv.apk` | 锁横屏，出现在电视启动器 |
+
+            下载后直接安装即可观看，片源已内置，无需再填地址。
+            手机 APK 需要在系统提示里允许「安装未知应用」；电视端先在设置里打开「未知来源安装」，
+            再用 U 盘或手机推送安装。校验和见 `SHA256SUMS.txt`。
+
+            ## 本次构建
+
+            - 高清海报（TMDB）：${{ needs.meta.outputs.tmdb == 'yes' && '已注入' || '未配置密钥，使用片源自带海报' }}
+            - 看剧AI 线路：${{ needs.meta.outputs.kanju == 'yes' && '已注入' || '未配置密钥，本次构建不可用' }}
+            - APK 签名：${{ needs.meta.outputs.signed == 'yes' && '正式发布密钥（可覆盖升级）' || 'debug 签名（换包需先卸载）' }}

@@ -1,0 +1,37 @@
+node_modules/
+dist/
+data/
+.DS_Store
+*.log
+.env
+android/.gradle/
+android/app/build/
+android/build/
+desktop/src-tauri/target/
+desktop/node_modules/
+desktop/release/
+desktop/web/
+mobile/node_modules/
+mobile/www/
+mobile/android/.gradle/
+mobile/android/app/build/
+mobile/android/build/
+mobile/android/local.properties
+mobile/android/app/src/main/assets/public/
+mobile/android/app/src/main/assets/capacitor.config.json
+# 打包产物与本地密钥，绝不进仓库
+desktop/release*/
+desktop/electron-dist/
+desktop/.icon-ico/
+*.asar
+.env.local
+.env.*.local
+!.env.example
+*.keystore
+*.jks
+tmp/
+*.pid
+visualization-output/
+
+# 本地签名密钥与凭据，绝不进仓库
+keystore/

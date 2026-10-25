@@ -1,0 +1,19 @@
+{
+  "name": "kaytv-mobile",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "copy:web": "node copy-web.mjs",
+    "assets": "node make-assets.mjs",
+    "add:android": "npm run copy:web && cap add android && node patch-android.mjs",
+    "sync": "npm run copy:web && cap sync android"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.5.3",
+    "@capacitor/core": "^8.5.3"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.5.3"
+  }
+}

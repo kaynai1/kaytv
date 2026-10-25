@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">KayTV</string>
+    <string name="title_activity_main">KayTV</string>
+    <string name="package_name">com.kaynai.kaytv</string>
+    <string name="custom_url_scheme">com.kaynai.kaytv</string>
+</resources>

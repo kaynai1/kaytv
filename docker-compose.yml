@@ -1,0 +1,20 @@
+services:
+  kaytv:
+    image: ghcr.io/kaynai1/kaytv:latest
+    # 想在本机直接构建时，注释掉 image 并打开下面的 build
+    # build: .
+    container_name: kaytv
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+    environment:
+      - DATA_DIR=/data
+      # 留空则首次启动自动生成密码，docker logs kaytv 查看
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
+      # 看剧AI 接口签名密钥，留空则该源不可用（客户端内置模式由构建期注入，无需服务端配置）
+      - KANJU_SECRET=${KANJU_SECRET:-}
+      # 部分采集接口需要代理时取消注释，改成你的代理地址
+      # - OUTBOUND_PROXY=http://192.168.1.2:7897
+      - TZ=Asia/Shanghai
+    restart: unless-stopped
