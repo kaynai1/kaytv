@@ -35,7 +35,7 @@
 固定直链（永远指向最新版）：
 
 ```
-https://github.com/kaynai1/kaytv/releases/latest/download/KayTV-0.3.2-windows-setup.exe
+https://github.com/kaynai1/kaytv/releases/latest/download/KayTV-0.3.3-windows-setup.exe
 ```
 
 版本号会变，所以更省事的做法是直接打开 <https://github.com/kaynai1/kaytv/releases/latest> 选自己那台设备的文件。应用内 **设置 → 版本更新** 会显示二维码，手机扫码即可打开这个页面，电视端也能用浏览器直接下载。
@@ -192,8 +192,8 @@ GitHub Actions 用仓库 Secrets 注入：`TMDB_API_KEY`、`KANJU_SECRET`，另�
 - `.github/workflows/ci.yml`：PR / main 的前端类型检查与构建
 
 ```bash
-git tag v0.3.2
-git push origin v0.3.2
+git tag v0.3.3
+git push origin v0.3.3
 ```
 
 产物命名固定为 `KayTV-<版本>-windows-setup.exe` / `-windows-portable.exe` / `-phone.apk` / `-tv.apk`，配合 `releases/latest/download/...` 可以做成不随版本变化的取货直链。
