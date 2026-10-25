@@ -1516,8 +1516,8 @@ img {
     grid-template-columns: minmax(0, 1fr);
     grid-template-areas:
       "stage"
-      "epg"
-      "wall";
+      "wall"
+      "epg";
   }
   .epg-panel {
     position: static;

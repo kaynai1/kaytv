@@ -39,6 +39,8 @@ function createWindow() {
 }
 
 app.setAppUserModelId('com.kaynai.kaytv')
+// 打开片子就要有声，不能被 Chromium 的自动播放策略拖成静音
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
 
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null)

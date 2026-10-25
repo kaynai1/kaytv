@@ -60,6 +60,9 @@ const is4k = computed(() => /4k|2160|uhd|超高清/i.test(props.channel.name))
   align-items: center;
   gap: 8px;
   min-width: 0;
+  /* button 默认按内容收缩，节目名一长就会盖住旁边的台 */
+  width: 100%;
+  overflow: hidden;
   padding: 14px 10px 11px;
   border-radius: 4px;
   border: 1px solid transparent;

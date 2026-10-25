@@ -66,6 +66,146 @@ const FAIL_STORE = 'kaytv.standalone.fail.v1'
 const cache = new Map<string, { value: unknown; expires: number }>()
 const failures = loadFailures()
 
+/*
+ * 落盘缓存：只有第一次安装才需要等源站把分类、片墙、详情跑出来，
+ * 之后先拿本机旧数据铺界面，过期了就在后台悄悄刷新。
+ * 播放地址（kanju:play）带时效，只留在内存里，不能隔天再发出去。
+ */
+const DB_NAME = 'kaytv-standalone'
+const DB_STORE = 'cache'
+const STALE_WINDOW = 12 * 60 * 60 * 1000
+const MAX_ENTRIES = 400
+
+interface DiskEntry {
+  value: unknown
+  expires: number
+  storedAt: number
+}
+
+function persistable(key: string): boolean {
+  return !key.startsWith('kanju:play:')
+}
+
+let dbPromise: Promise<IDBDatabase | null> | null = null
+
+function openDb(): Promise<IDBDatabase | null> {
+  if (!dbPromise) {
+    dbPromise = new Promise((resolve) => {
+      try {
+        const request = indexedDB.open(DB_NAME, 1)
+        request.onupgradeneeded = () => {
+          const db = request.result
+          if (!db.objectStoreNames.contains(DB_STORE)) {
+            db.createObjectStore(DB_STORE).createIndex('byStored', 'storedAt')
+          }
+        }
+        request.onsuccess = () => resolve(request.result)
+        request.onerror = () => resolve(null)
+        request.onblocked = () => resolve(null)
+      } catch {
+        resolve(null)
+      }
+    })
+  }
+  return dbPromise
+}
+
+function withStore<T>(mode: IDBTransactionMode, run: (store: IDBObjectStore) => Promise<T>): Promise<T | null> {
+  return openDb().then(async (db) => {
+    if (!db) return null
+    try {
+      return await run(db.transaction(DB_STORE, mode).objectStore(DB_STORE))
+    } catch {
+      return null
+    }
+  })
+}
+
+function ask<T>(request: IDBRequest): Promise<T | null> {
+  return new Promise((resolve) => {
+    request.onsuccess = () => resolve(request.result as T)
+    request.onerror = () => resolve(null)
+  })
+}
+
+function diskGet(key: string): Promise<DiskEntry | null> {
+  return withStore('readonly', async (store) => (await ask<DiskEntry>(store.get(key))) || null)
+}
+
+let writes = 0
+
+function diskPut(key: string, entry: DiskEntry) {
+  if (++writes % 25 !== 0) {
+    void withStore('readwrite', (store) => {
+      store.put(entry, key)
+      return Promise.resolve(null)
+    })
+    return
+  }
+  void withStore('readwrite', async (store) => {
+    store.put(entry, key)
+    const total = await ask<number>(store.count())
+    const excess = (total || 0) - MAX_ENTRIES
+    if (excess <= 0) return null
+    const cursorRequest = store.index('byStored').openCursor()
+    let removed = 0
+    cursorRequest.onsuccess = () => {
+      const cursor = cursorRequest.result
+      if (!cursor || removed >= excess) return
+      removed += 1
+      cursor.delete()
+      cursor.continue()
+    }
+    return null
+  })
+}
+
+const refreshing = new Set<string>()
+
+async function revalidate<T>(key: string, ttl: number, producer: () => Promise<T>) {
+  if (refreshing.has(key)) return
+  refreshing.add(key)
+  try {
+    const value = await producer()
+    if (value !== undefined) remember(key, value, ttl)
+  } catch {
+    /* 后台刷新失败就继续用旧数据，不用打扰用户 */
+  } finally {
+    refreshing.delete(key)
+  }
+}
+
+function remember<T>(key: string, value: T, ttl: number) {
+  const expires = Date.now() + ttl
+  cache.set(key, { value, expires })
+  if (cache.size > 300) {
+    for (const [entryKey, entry] of cache) {
+      if (entry.expires <= Date.now()) cache.delete(entryKey)
+    }
+  }
+  if (persistable(key)) diskPut(key, { value, expires, storedAt: Date.now() })
+}
+
+async function cached<T>(key: string, ttl: number, producer: () => Promise<T>): Promise<T> {
+  const now = Date.now()
+  let hit = cache.get(key)
+  if (!hit && persistable(key)) {
+    const stored = await diskGet(key)
+    if (stored) {
+      hit = { value: stored.value, expires: stored.expires }
+      cache.set(key, hit)
+    }
+  }
+  if (hit && hit.expires > now) return hit.value as T
+  if (hit && persistable(key) && now - hit.expires < STALE_WINDOW) {
+    void revalidate(key, ttl, producer)
+    return hit.value as T
+  }
+  const value = await producer()
+  remember(key, value, ttl)
+  return value
+}
+
 function loadFailures(): Map<string, number> {
   try {
     const raw = localStorage.getItem(FAIL_STORE)
@@ -86,19 +226,6 @@ function saveFailures() {
   } catch {
     /* storage may be unavailable */
   }
-}
-
-async function cached<T>(key: string, ttl: number, producer: () => Promise<T>): Promise<T> {
-  const hit = cache.get(key)
-  if (hit && hit.expires > Date.now()) return hit.value as T
-  const value = await producer()
-  cache.set(key, { value, expires: Date.now() + ttl })
-  if (cache.size > 300) {
-    for (const [entryKey, entry] of cache) {
-      if (entry.expires <= Date.now()) cache.delete(entryKey)
-    }
-  }
-  return value
 }
 
 function markFailed(id: string, reason = '') {

@@ -1,6 +1,13 @@
 package com.kaynai.kaytv;
 
+import android.content.Context;
+import android.content.Intent;
+import android.database.ContentObserver;
+import android.media.AudioManager;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.provider.Settings;
 import android.view.WindowManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
@@ -20,6 +27,17 @@ public class MainActivity extends BridgeActivity {
             nativeBridge = new NativeBridge();
             webView.addJavascriptInterface(nativeBridge, "kaytvNative");
         }
+        if (nativeBridge != null) {
+            nativeBridge.observeSystemVolume();
+        }
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (nativeBridge != null) {
+            nativeBridge.stopObserving();
+        }
+        super.onDestroy();
     }
 
     @SuppressWarnings("deprecation")
@@ -33,10 +51,11 @@ public class MainActivity extends BridgeActivity {
         super.onBackPressed();
     }
 
-    /** H5 直接控制常亮与返回兜底，省掉一个外部插件 */
+    /** H5 直接控制常亮、系统音量、投屏面板与返回兜底，省掉外部插件 */
     public final class NativeBridge {
 
         private volatile boolean backHandled = false;
+        private ContentObserver volumeObserver;
 
         @JavascriptInterface
         public void setBackHandled(boolean handled) {
@@ -69,6 +88,116 @@ public class MainActivity extends BridgeActivity {
                     }
                 }
             );
+        }
+
+        /* ---------- 系统媒体音量：让应用内音量条和音量键是同一个东西 ---------- */
+
+        private AudioManager audio() {
+            return (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+        }
+
+        @JavascriptInterface
+        public int getSystemVolume() {
+            AudioManager manager = audio();
+            if (manager == null) return -1;
+            int max = manager.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
+            if (max <= 0) return -1;
+            return (int) Math.round(manager.getStreamVolume(AudioManager.STREAM_MUSIC) * 100f / max);
+        }
+
+        @JavascriptInterface
+        public void setSystemVolume(final int percent) {
+            runOnUiThread(
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        AudioManager manager = audio();
+                        if (manager == null) return;
+                        int max = manager.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
+                        if (max <= 0) return;
+                        int clamped = percent < 0 ? 0 : (percent > 100 ? 100 : percent);
+                        int target = (int) Math.round(clamped * max / 100f);
+                        if (target == manager.getStreamVolume(AudioManager.STREAM_MUSIC)) return;
+                        try {
+                            manager.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0);
+                        } catch (SecurityException ignored) {
+                            /* 个别定制 ROM 会拦，忽略即可，音量条退回软件音量 */
+                        }
+                    }
+                }
+            );
+        }
+
+        /** 按音量键、通知栏滑块改音量时回推给 H5 */
+        void observeSystemVolume() {
+            Handler handler = new Handler(Looper.getMainLooper());
+            volumeObserver =
+                new ContentObserver(handler) {
+                    @Override
+                    public void onChange(boolean selfChange) {
+                        reportSystemVolume();
+                    }
+                };
+            try {
+                getContentResolver().registerContentObserver(Settings.System.CONTENT_URI, true, volumeObserver);
+            } catch (Exception ignored) {
+                volumeObserver = null;
+            }
+            reportSystemVolume();
+        }
+
+        void stopObserving() {
+            if (volumeObserver == null) return;
+            try {
+                getContentResolver().unregisterContentObserver(volumeObserver);
+            } catch (Exception ignored) {
+                /* ignore */
+            }
+            volumeObserver = null;
+        }
+
+        private void reportSystemVolume() {
+            final int percent = getSystemVolume();
+            if (percent < 0) return;
+            runOnUiThread(
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        WebView view = getBridge() == null ? null : getBridge().getWebView();
+                        if (view == null) return;
+                        view.evaluateJavascript(
+                            "window.dispatchEvent(new CustomEvent('kaytv:volume',{detail:" + percent + "}))",
+                            null
+                        );
+                    }
+                }
+            );
+        }
+
+        /* ---------- 投屏：拉起系统的无线投屏 / 多屏互动面板 ---------- */
+
+        @JavascriptInterface
+        public boolean openCastPanel() {
+            String[] actions = new String[] {
+                "android.settings.panel.action.WIFI_DISPLAY",
+                "android.settings.DISPLAY_CASTING_SETTINGS",
+                "android.settings.WIFI_DISPLAY_SETTINGS"
+            };
+            for (String action : actions) {
+                if (startPanel(action)) return true;
+            }
+            return false;
+        }
+
+        private boolean startPanel(String action) {
+            Intent intent = new Intent(action);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            try {
+                startActivity(intent);
+                return true;
+            } catch (Exception ignored) {
+                return false;
+            }
         }
     }
 }

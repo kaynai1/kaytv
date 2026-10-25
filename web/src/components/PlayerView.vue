@@ -8,9 +8,11 @@ import { api } from '../api/client'
 import { mediaUrl, runtime } from '../api/runtime'
 import { copyText } from '../api/diagnostics'
 import { toast } from '../composables/useToast'
+import { nativeBridge } from '../composables/useNativeBridge'
 import { useLiveStore } from '../stores/live'
-import type { Channel, VodDetail } from '../types'
+import type { Channel, PosterItem, VodDetail } from '../types'
 import AppIcon from './AppIcon.vue'
+import VodInfoPanel from './VodInfoPanel.vue'
 
 const player = usePlayerStore()
 const library = useLibraryStore()
@@ -35,10 +37,11 @@ const audioIndex = ref(0)
 const subtitleTracks = ref<string[]>([])
 const subtitleIndex = ref(-1)
 const menu = ref('')
-const drawerTab = ref<'list' | 'sources'>('list')
+const drawerTab = ref<'list' | 'sources' | 'info'>('list')
 const sourceQuery = ref('')
 const sourcePicking = ref('')
 const immersive = ref(false)
+const portrait = ref(window.innerHeight >= window.innerWidth)
 const fillMode = ref<'contain' | 'cover'>('contain')
 const rate = ref(1)
 const skipIntro = ref(0)
@@ -128,6 +131,17 @@ const canNext = computed(() => {
   return (vod.value.episodeIndex || 0) + 1 < (line.value?.episodes.length || 0)
 })
 
+/** 手机竖屏打开片子：画面缩到上面 16:9，下面走详情/线路/选集/推荐，和主流追剧 App 一致 */
+const sheetMode = computed(
+  () =>
+    runtime.native &&
+    !settings.tvMode &&
+    !isLive.value &&
+    !!vod.value &&
+    portrait.value &&
+    !isFullscreen.value
+)
+
 const lineGroups = computed(() => {
   const official: { item: (typeof lines.value)[number]; index: number }[] = []
   const standard: { item: (typeof lines.value)[number]; index: number }[] = []
@@ -143,6 +157,7 @@ const lineGroups = computed(() => {
 
 const drawerTitle = computed(() => {
   if (drawerTab.value === 'sources') return isLive.value ? '播放源' : '线路与片源'
+  if (drawerTab.value === 'info') return '详情'
   return isLive.value ? '切换频道' : '选集'
 })
 
@@ -151,6 +166,7 @@ const drawerMeta = computed(() => {
     if (isLive.value) return `${liveSources.value.length} 个直播源 · 当前「${player.live?.sourceName || '未知'}」`
     return `${lines.value.length} 条线路 · 当前片源「${vod.value?.detail.sourceName || '未知'}」`
   }
+  if (drawerTab.value === 'info') return vod.value?.detail.name || ''
   if (isLive.value) return `${channels.value.length} 个频道`
   return `${line.value?.episodes.length || 0} 集 · 第 ${(vod.value?.episodeIndex || 0) + 1} 集`
 })
@@ -520,21 +536,12 @@ async function startPlayback() {
     await element.play()
     return
   } catch {
-    /* 浏览器可能拦截有声自动播放，静音后重试一次 */
+    /* 自动播放被拦时不再退化成静音，露出控制条让用户点一下画面 */
   }
-  if (!element.muted) {
-    element.muted = true
-    muted.value = true
-    try {
-      await element.play()
-      toast.info('已自动静音播放，点击音量按钮或按 M 恢复声音')
-      return
-    } catch {
-      /* 需要用户手动点击 */
-    }
-  }
-  controlsVisible.value = true
   waiting.value = false
+  playing.value = false
+  controlsVisible.value = true
+  toast.info('浏览器拦住了有声自动播放，点一下画面即可继续，不会再自动静音')
 }
 
 async function attach() {
@@ -542,7 +549,7 @@ async function attach() {
   if (!element) return
   const token = ++attachToken
   clearEngines()
-  element.volume = volume.value
+  applyVolume()
   element.muted = muted.value || volume.value === 0
   element.playbackRate = rate.value
   element.defaultPlaybackRate = rate.value
@@ -825,11 +832,21 @@ function selectChannel(index: number) {
   wake()
 }
 
+/* ---------- 音量：手机与电视端直接读写系统媒体音量，音量键和界面里的条是同一个 ---------- */
+const useSystemVolume = computed(
+  () => runtime.native && typeof nativeBridge()?.getSystemVolume === 'function'
+)
+
 function applyVolume() {
   const element = video.value
-  if (!element) return
-  element.volume = volume.value
-  if (volume.value > 0 && element.muted) {
+  if (useSystemVolume.value) {
+    // 元素音量顶满，响度只由系统决定，两级音量叠在一起会让每一格都越调越小
+    if (element) element.volume = 1
+    nativeBridge()?.setSystemVolume(Math.round(volume.value * 100))
+  } else if (element) {
+    element.volume = volume.value
+  }
+  if (volume.value > 0 && element?.muted) {
     element.muted = false
     muted.value = false
   }
@@ -837,10 +854,12 @@ function applyVolume() {
 
 function setVolume(value: number) {
   volume.value = Math.max(0, Math.min(1, Math.round(value * 100) / 100))
-  try {
-    window.localStorage.setItem('kaytv.volume', String(volume.value))
-  } catch {
-    /* ignore */
+  if (!useSystemVolume.value) {
+    try {
+      window.localStorage.setItem('kaytv.volume', String(volume.value))
+    } catch {
+      /* ignore */
+    }
   }
   applyVolume()
   wake()
@@ -856,15 +875,35 @@ function onVolumeInput(event: Event) {
   setVolume(value / 100)
 }
 
-function restoreVolume() {
-  let saved = 1
-  try {
-    const raw = window.localStorage.getItem('kaytv.volume')
-    if (raw !== null) saved = Math.max(0, Math.min(1, Number(raw) || 0))
-  } catch {
-    /* ignore */
+/** 音量键、通知栏滑块改完之后系统回推，这里只跟着刷新，不再写回去 */
+function onSystemVolume(event: Event) {
+  const percent = (event as CustomEvent<number>).detail
+  if (!Number.isFinite(percent)) return
+  const next = Math.max(0, Math.min(1, Math.round(percent) / 100))
+  if (Math.abs(next - volume.value) < 0.005) return
+  volume.value = next
+  const element = video.value
+  if (next > 0) {
+    muted.value = false
+    if (element) element.muted = false
   }
-  volume.value = saved
+}
+
+function restoreVolume() {
+  const systemPercent = useSystemVolume.value ? nativeBridge()?.getSystemVolume() ?? -1 : -1
+  if (systemPercent >= 0) {
+    volume.value = Math.max(0, Math.min(1, systemPercent / 100))
+    muted.value = false
+  } else {
+    let saved = 1
+    try {
+      const raw = window.localStorage.getItem('kaytv.volume')
+      if (raw !== null) saved = Math.max(0, Math.min(1, Number(raw) || 0))
+    } catch {
+      /* ignore */
+    }
+    volume.value = saved
+  }
   void nextTick(applyVolume)
 }
 
@@ -1033,16 +1072,21 @@ function openCast() {
   const element = video.value as
     | (HTMLVideoElement & { remote?: { prompt?: () => Promise<unknown> } })
     | null
-  const remote = element?.remote
-  if (!remote?.prompt) {
-    toast.info(
-      runtime.native
-        ? '应用内没有可用的投屏通道，请用系统下拉菜单里的「投屏 / 多屏互动」镜像本屏幕'
-        : '当前设备没有可用的投屏通道，建议用电视端或 HDMI'
-    )
+  if (element?.remote?.prompt) {
+    void element.remote.prompt().catch(() => toast.error('没有发现可投屏设备'))
+    wake()
     return
   }
-  void remote.prompt().catch(() => toast.error('没有发现可投屏设备'))
+  if (runtime.native && nativeBridge()?.openCastPanel?.()) {
+    toast.info('已打开系统投屏面板，选中电视后镜像本屏幕；投屏期间请把 KayTV 留在前台播放')
+    wake()
+    return
+  }
+  toast.info(
+    runtime.native
+      ? '这台设备没有可用的系统投屏面板，可以「复制播放地址」用电视浏览器打开，或直接装电视端'
+      : '当前设备没有可用的投屏通道，建议用电视端或 HDMI'
+  )
   wake()
 }
 
@@ -1185,6 +1229,24 @@ function selectEpisode(index: number) {
   wake()
 }
 
+/** 详情面板里的「猜你喜欢」：先取详情再换片，取不到就退回提示，不打断当前播放 */
+async function playRelated(item: PosterItem) {
+  if (!item?.sourceId || !item?.id) return
+  try {
+    const detail = await api.detail(item.sourceId, item.id)
+    if (!detail || !detail.playable) {
+      toast.error('这部片暂时播不了，换个源试试')
+      return
+    }
+    saveProgress(true)
+    resetRecovery()
+    player.openVod(detail, 0, 0, 0)
+    closeDrawer()
+  } catch {
+    toast.error('详情加载失败，换个片源试试')
+  }
+}
+
 function onEnded() {
   if (isLive.value) {
     if (!tryNextLine()) showError('直播已结束')
@@ -1201,7 +1263,7 @@ function onEnded() {
   }
 }
 
-function openDrawer(tab?: 'list' | 'sources') {
+function openDrawer(tab?: 'list' | 'sources' | 'info') {
   if (tab) drawerTab.value = tab
   closeMenu()
   if (drawerOpen.value) {
@@ -1226,7 +1288,7 @@ function closeDrawer() {
   wake()
 }
 
-function toggleDrawer(tab: 'list' | 'sources') {
+function toggleDrawer(tab: 'list' | 'sources' | 'info') {
   if (drawerOpen.value && drawerTab.value === tab) closeDrawer()
   else openDrawer(tab)
 }
@@ -1278,12 +1340,12 @@ async function lockOrientation(value: 'landscape' | 'any') {
   }
 }
 
-function enterFullscreen() {
+function enterFullscreen(lock = true) {
   if (runtime.native) {
     immersive.value = true
     isFullscreen.value = true
     setSystemBarsHidden(true)
-    void lockOrientation('landscape')
+    if (lock) void lockOrientation('landscape')
     return
   }
   const element = root.value
@@ -1313,6 +1375,16 @@ function toggleFullscreen() {
 function onFullscreenChange() {
   if (!immersive.value) isFullscreen.value = Boolean(document.fullscreenElement)
 }
+
+function onResize() {
+  portrait.value = window.innerHeight >= window.innerWidth
+}
+
+/* 手机上横过来就自动铺满，回到竖屏再看下面的选集和推荐 */
+watch(portrait, (upright) => {
+  if (upright || !player.open || isLive.value || isFullscreen.value) return
+  if (runtime.native && !settings.tvMode) enterFullscreen(false)
+})
 
 function wake() {
   controlsVisible.value = true
@@ -1495,7 +1567,10 @@ watch(
       drawerQuery.value = ''
       error.value = ''
       controlsVisible.value = true
-      if (runtime.native && !settings.tvMode) enterFullscreen()
+      if (runtime.native && !settings.tvMode) {
+        if (isLive.value) enterFullscreen()
+        else if (!portrait.value) enterFullscreen(false)
+      }
       void nextTick(() => {
         root.value?.focus({ preventScroll: true })
         wake()
@@ -1533,6 +1608,8 @@ onMounted(() => {
   restoreRate()
   restoreSkip()
   restoreFill()
+  window.addEventListener('kaytv:volume', onSystemVolume)
+  window.addEventListener('resize', onResize)
   window.addEventListener('popstate', onPopState)
   window.addEventListener('beforeunload', onBeforeUnload)
   document.addEventListener('visibilitychange', onVisibilityChange)
@@ -1540,6 +1617,8 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('kaytv:volume', onSystemVolume)
+  window.removeEventListener('resize', onResize)
   window.removeEventListener('popstate', onPopState)
   window.removeEventListener('beforeunload', onBeforeUnload)
   document.removeEventListener('visibilitychange', onVisibilityChange)
@@ -1557,12 +1636,13 @@ onBeforeUnmount(() => {
       v-if="player.open"
       ref="root"
       class="player-overlay"
-      :class="{ 'controls-idle': !controlsVisible || drawerOpen }"
+      :class="{ 'controls-idle': !controlsVisible || drawerOpen, sheet: sheetMode }"
       tabindex="-1"
       @keydown.capture="onKeydown"
       @mousemove="wake"
       @touchstart.passive="wake"
     >
+      <div class="player-stage">
       <video
         ref="video"
         class="player-video"
@@ -1629,10 +1709,10 @@ onBeforeUnmount(() => {
           <p>{{ subtitleText }}</p>
         </div>
         <div class="player-top-right">
-          <span class="player-host">{{ hostOf(player.currentUrl) }}</span>
+          <span class="player-host sheet-hide">{{ hostOf(player.currentUrl) }}</span>
           <button
             v-if="canPip"
-            class="player-btn round"
+            class="player-btn round sheet-hide"
             type="button"
             aria-label="小窗播放"
             @click="togglePip"
@@ -1648,7 +1728,7 @@ onBeforeUnmount(() => {
           >
             <AppIcon name="cast" :size="20" />
           </button>
-          <div class="menu-anchor">
+          <div class="menu-anchor sheet-hide">
             <button
               class="player-btn round"
               type="button"
@@ -1673,7 +1753,7 @@ onBeforeUnmount(() => {
               </button>
             </div>
           </div>
-          <button class="player-btn round" type="button" aria-label="关闭" @click="closePlayer">
+          <button class="player-btn round sheet-hide" type="button" aria-label="关闭" @click="closePlayer">
             <AppIcon name="close" :size="22" />
           </button>
         </div>
@@ -1744,7 +1824,7 @@ onBeforeUnmount(() => {
                 <AppIcon name="right" :size="18" />
               </button>
             </template>
-            <div class="volume-group">
+            <div class="volume-group sheet-hide">
               <button
                 class="player-btn round small"
                 type="button"
@@ -1754,7 +1834,7 @@ onBeforeUnmount(() => {
                 <AppIcon :name="volumeIcon" :size="18" />
               </button>
               <button
-                class="player-btn round tiny"
+                class="player-btn round tiny sheet-hide"
                 type="button"
                 aria-label="音量减小"
                 @click="stepVolume(-0.1)"
@@ -1775,19 +1855,19 @@ onBeforeUnmount(() => {
                 />
               </div>
               <button
-                class="player-btn round tiny"
+                class="player-btn round tiny sheet-hide"
                 type="button"
                 aria-label="音量增大"
                 @click="stepVolume(0.1)"
               >
                 <AppIcon name="plus" :size="13" />
               </button>
-              <span class="volume-value">{{ muted || volume === 0 ? '静音' : `${volumePercent}%` }}</span>
+              <span class="volume-value sheet-hide">{{ muted || volume === 0 ? '静音' : `${volumePercent}%` }}</span>
             </div>
             <span v-if="!isLive" class="player-clock">{{ clockText }} / {{ durationText }}</span>
           </div>
           <div class="controls-right">
-            <div v-if="!isLive" class="menu-anchor">
+            <div v-if="!isLive" class="menu-anchor sheet-hide">
               <button
                 class="player-btn pill"
                 type="button"
@@ -1810,7 +1890,7 @@ onBeforeUnmount(() => {
                 </button>
               </div>
             </div>
-            <div v-if="!isLive" class="menu-anchor">
+            <div v-if="!isLive" class="menu-anchor sheet-hide">
               <button
                 class="player-btn pill"
                 type="button"
@@ -1848,17 +1928,21 @@ onBeforeUnmount(() => {
                 </div>
               </div>
             </div>
-            <button class="player-btn pill" type="button" @click="toggleDrawer('sources')">
+            <button class="player-btn pill sheet-hide" type="button" @click="toggleDrawer('sources')">
               <AppIcon name="server" :size="16" />
               播放源
             </button>
-            <button class="player-btn pill" type="button" @click="toggleDrawer('list')">
+            <button class="player-btn pill sheet-hide" type="button" @click="toggleDrawer('list')">
               <AppIcon :name="isLive ? 'tv' : 'film'" :size="16" />
               {{ isLive ? '频道' : '选集' }}
             </button>
-            <button v-if="canNext" class="player-btn pill" type="button" @click="nextEpisode">
+            <button v-if="canNext" class="player-btn pill sheet-hide" type="button" @click="nextEpisode">
               <AppIcon name="right" :size="16" />
               下一集
+            </button>
+            <button v-if="!isLive" class="player-btn pill sheet-hide" type="button" @click="toggleDrawer('info')">
+              <AppIcon name="info" :size="16" />
+              详情
             </button>
             <button
               v-if="!settings.tvMode"
@@ -1878,6 +1962,18 @@ onBeforeUnmount(() => {
           <span>Enter 播放/暂停</span>
           <span>Esc 退出</span>
         </p>
+      </div>
+      </div>
+
+      <div v-if="sheetMode" class="player-sheet hide-scrollbar">
+        <VodInfoPanel
+          @line="selectLine"
+          @episode="selectEpisode"
+          @related="void playRelated($event)"
+          @cast="openCast"
+          @copy="void copyPlaybackUrl()"
+          @fullscreen="enterFullscreen"
+        />
       </div>
 
       <Transition name="drawer">
@@ -1909,9 +2005,29 @@ onBeforeUnmount(() => {
             >
               播放源
             </button>
+            <button
+              v-if="!isLive"
+              class="drawer-tab"
+              :class="{ active: drawerTab === 'info' }"
+              type="button"
+              @click="drawerTab = 'info'"
+            >
+              详情
+            </button>
           </div>
 
-          <template v-if="drawerTab === 'list'">
+          <div v-if="drawerTab === 'info'" class="drawer-scroll info-scroll">
+            <VodInfoPanel
+              @line="selectLine"
+              @episode="selectEpisode"
+              @related="void playRelated($event)"
+              @cast="openCast"
+              @copy="void copyPlaybackUrl()"
+              @fullscreen="enterFullscreen()"
+            />
+          </div>
+
+          <template v-else-if="drawerTab === 'list'">
             <div v-if="isLive" class="search-field drawer-search">
               <AppIcon class="search-icon" name="search" :size="16" />
               <input v-model="drawerQuery" class="input" type="search" placeholder="搜索频道" autocomplete="off" />
@@ -2063,6 +2179,58 @@ onBeforeUnmount(() => {
   height: 100%;
   object-fit: contain;
   background: #000;
+}
+
+/* 画面区：默认铺满整屏，手机竖屏改成顶部 16:9，下面留给详情 */
+.player-stage {
+  position: absolute;
+  inset: 0;
+}
+
+.player-overlay.sheet {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+.player-overlay.sheet .player-stage {
+  position: relative;
+  inset: auto;
+  flex: none;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #000;
+}
+
+.player-overlay.sheet .sheet-hide {
+  display: none;
+}
+
+.player-overlay.sheet .player-top {
+  padding: 10px 12px 30px;
+}
+
+.player-overlay.sheet .player-bottom {
+  padding: 30px 12px 10px;
+  gap: 8px;
+}
+
+.player-overlay.sheet .player-controls {
+  flex-wrap: nowrap;
+  gap: 8px;
+}
+
+.player-overlay.sheet .player-error {
+  position: fixed;
+}
+
+.player-sheet {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding: 2px 14px calc(26px + env(safe-area-inset-bottom));
 }
 
 .player-spinner {

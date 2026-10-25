@@ -129,6 +129,17 @@ const skippedCount = computed(
   () => visibleChannels.value.filter((channel) => live.isFailed(channel)).length
 )
 
+/* 手机上「全部」有六百多个台，一次全铺出来既卡又找不到，先给一页再看更多 */
+const PAGE_STEPS = [80, 160, 320, 640, 1280]
+const pageIndex = ref(0)
+const pageLimit = computed(() => PAGE_STEPS[Math.min(pageIndex.value, PAGE_STEPS.length - 1)])
+const pagedChannels = computed(() => visibleChannels.value.slice(0, pageLimit.value))
+const moreChannels = computed(() => visibleChannels.value.length - pagedChannels.value.length)
+
+watch([group, query], () => {
+  pageIndex.value = 0
+})
+
 const groupNote = computed(() => {
   const parts: string[] = []
   const sameGroup = channelProbeState.group === group.value
@@ -952,7 +963,7 @@ watch(
         </section>
 
         <div class="channel-grid">
-          <div v-for="channel in visibleChannels" :key="channel.id" class="channel-cell">
+          <div v-for="channel in pagedChannels" :key="channel.id" class="channel-cell">
             <ChannelTile
               :channel="channel"
               :active="channel.id === playingId"
@@ -976,6 +987,16 @@ watch(
               >{{ probeLabel(channel) }}</span
             >
           </div>
+          <button
+            v-if="moreChannels > 0"
+            class="channel-more"
+            data-nav
+            type="button"
+            @click="pageIndex += 1"
+          >
+            <AppIcon name="down" :size="15" />
+            显示更多频道（还有 {{ moreChannels }} 个）
+          </button>
         </div>
 
         <aside class="epg-panel">
@@ -1074,6 +1095,31 @@ watch(
 }
 .live-layout > .epg-panel {
   grid-area: epg;
+}
+.channel-more {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 42px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition:
+    color 0.18s ease,
+    border-color 0.18s ease,
+    background 0.18s ease;
+}
+.channel-more:hover,
+.channel-more:focus-visible {
+  color: #fff;
+  border-color: var(--line-strong);
+  background: var(--surface-2);
 }
 .source-row {
   margin-top: -2px;

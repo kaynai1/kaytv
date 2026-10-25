@@ -8,13 +8,18 @@ interface NativeBridge {
   setBackHandled(handled: boolean): void
   setKeepAwake(keep: boolean): void
   minimize(): void
+  /** 系统媒体音量：0-100，-1 表示拿不到 */
+  getSystemVolume(): number
+  setSystemVolume(percent: number): void
+  /** 拉起系统的无线投屏 / 多屏互动面板，返回是否成功 */
+  openCastPanel(): boolean
 }
 
-function nativeBridge(): NativeBridge | undefined {
+export function nativeBridge(): NativeBridge | undefined {
   return (window as { kaytvNative?: NativeBridge }).kaytvNative
 }
 
-/** Android 返回键与屏幕常亮；桌面与浏览器没有 kaytvNative，直接跳过 */
+/** Android 返回键、屏幕常亮、系统音量与投屏面板；桌面与浏览器没有 kaytvNative，直接跳过 */
 export function initNativeBridge() {
   const native = nativeBridge()
   if (!native) return
