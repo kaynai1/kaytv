@@ -34,6 +34,20 @@ const audioTracks = ref<string[]>([])
 const audioIndex = ref(0)
 const subtitleTracks = ref<string[]>([])
 const subtitleIndex = ref(-1)
+const menu = ref('')
+const drawerTab = ref<'list' | 'sources'>('list')
+const sourceQuery = ref('')
+const sourcePicking = ref('')
+const immersive = ref(false)
+const fillMode = ref<'contain' | 'cover'>('contain')
+const rate = ref(1)
+const skipIntro = ref(0)
+const skipOutro = ref(0)
+
+const RATES = [0.5, 0.75, 1, 1.25, 1.5, 2, 3]
+const SKIP_STEPS = [0, 5, 10, 15, 30, 60]
+let introSkipped = false
+let outroFired = false
 
 let hls: Hls | null = null
 let hlsLib: typeof import('hls.js').default | null = null
@@ -43,6 +57,7 @@ let attachToken = 0
 let resumeTarget = 0
 let hideTimer = 0
 let fallbackTimer = 0
+let stallTimer = 0
 let saveMark = 0
 let pushedState = false
 let resumeAfterHide = false
@@ -126,6 +141,20 @@ const lineGroups = computed(() => {
   return groups
 })
 
+const drawerTitle = computed(() => {
+  if (drawerTab.value === 'sources') return isLive.value ? '播放源' : '线路与片源'
+  return isLive.value ? '切换频道' : '选集'
+})
+
+const drawerMeta = computed(() => {
+  if (drawerTab.value === 'sources') {
+    if (isLive.value) return `${liveSources.value.length} 个直播源 · 当前「${player.live?.sourceName || '未知'}」`
+    return `${lines.value.length} 条线路 · 当前片源「${vod.value?.detail.sourceName || '未知'}」`
+  }
+  if (isLive.value) return `${channels.value.length} 个频道`
+  return `${line.value?.episodes.length || 0} 集 · 第 ${(vod.value?.episodeIndex || 0) + 1} 集`
+})
+
 function formatClock(seconds: number): string {
   const value = Math.max(0, Math.floor(seconds || 0))
   const hours = Math.floor(value / 3600)
@@ -204,6 +233,11 @@ function currentPosition(): number {
   return Math.max(0, element.currentTime)
 }
 
+/** 换线/换源时元素进度可能还没落到新地址上，待恢复的目标位置要一起带上 */
+function pendingPosition(): number {
+  return Math.max(currentPosition(), resumeTarget)
+}
+
 function switchVodLine(index: number, position: number): boolean {
   const current = player.vod
   const target = lines.value[index]
@@ -216,7 +250,7 @@ function switchVodLine(index: number, position: number): boolean {
   }
   player.setLine(index)
   current.episodeIndex = episodeIndex
-  current.resume = position
+  current.resume = Math.max(position, resumeTarget)
   return true
 }
 
@@ -346,7 +380,7 @@ async function handleFailure(): Promise<boolean> {
       if (tryNextLine()) return true
       return await switchToOtherLiveSource()
     }
-    return await nextVodPlayback(currentPosition())
+    return await nextVodPlayback(pendingPosition())
   } finally {
     recovering = false
   }
@@ -376,8 +410,36 @@ function armFallback() {
   }, isLive.value ? 15000 : 20000)
 }
 
+/** 已经拿到元数据之后才会卡住：断流时不会再触发 error，只能靠有没有画面推进来判断 */
+function clearStall() {
+  if (!stallTimer) return
+  window.clearTimeout(stallTimer)
+  stallTimer = 0
+}
+
+function onWaiting() {
+  waiting.value = true
+  clearStall()
+  if (!player.open) return
+  stallTimer = window.setTimeout(() => {
+    stallTimer = 0
+    if (!player.open || error.value || drawerOpen.value || !waiting.value) return
+    const element = video.value
+    if (element && element.readyState >= 3 && !element.paused) return
+    void (async () => {
+      if (await handleFailure()) return
+      showError(
+        isLive.value
+          ? '直播流卡住没有画面，换台或切换直播源试试'
+          : '这条线路一直卡住，请在播放源里换个片源或线路'
+      )
+    })()
+  }, isLive.value ? 12000 : 20000)
+}
+
 function clearEngines() {
   clearFallback()
+  clearStall()
   audioTracks.value = []
   subtitleTracks.value = []
   audioIndex.value = 0
@@ -427,7 +489,7 @@ async function switchSourceNow() {
   resetRecovery()
   error.value = ''
   waiting.value = true
-  if (await switchToOtherSource(currentPosition())) {
+  if (await switchToOtherSource(pendingPosition())) {
     wake()
     return
   }
@@ -482,6 +544,10 @@ async function attach() {
   clearEngines()
   element.volume = volume.value
   element.muted = muted.value || volume.value === 0
+  element.playbackRate = rate.value
+  element.defaultPlaybackRate = rate.value
+  introSkipped = false
+  outroFired = false
   error.value = ''
   waiting.value = true
   duration.value = 0
@@ -644,6 +710,7 @@ function onLoadedMetadata() {
   if (!element) return
   waiting.value = false
   duration.value = isLive.value ? 0 : element.duration || 0
+  applyRate()
   if (resumeTarget > 0 && Number.isFinite(element.duration) && resumeTarget < element.duration - 3) {
     element.currentTime = resumeTarget
     position.value = resumeTarget
@@ -663,7 +730,10 @@ function onTimeUpdate() {
   const element = video.value
   if (!element) return
   position.value = element.currentTime || 0
-  if (!isLive.value && element.duration) duration.value = element.duration
+  if (!isLive.value && element.duration) {
+    duration.value = element.duration
+    handleSkip(element)
+  }
   if (!isLive.value && element.currentTime - saveMark >= 5) {
     saveMark = element.currentTime
     saveProgress(false)
@@ -818,6 +888,268 @@ const volumeIcon = computed(() => {
   return volume.value <= 0.5 ? 'volume-low' : 'volume'
 })
 
+function readStored(key: string): string {
+  try {
+    return window.localStorage.getItem(key) || ''
+  } catch {
+    return ''
+  }
+}
+
+function persist(key: string, value: string) {
+  try {
+    window.localStorage.setItem(key, value)
+  } catch {
+    /* ignore */
+  }
+}
+
+/* ---------- 倍速 ---------- */
+function applyRate() {
+  const element = video.value
+  if (!element) return
+  element.playbackRate = rate.value
+  element.defaultPlaybackRate = rate.value
+}
+
+function setRate(value: number) {
+  rate.value = value
+  persist('kaytv.rate', String(value))
+  applyRate()
+  closeMenu()
+  toast.info(value === 1 ? '已恢复常速播放' : `播放速度 ${value}x`)
+  wake()
+}
+
+function restoreRate() {
+  const saved = Number(readStored('kaytv.rate'))
+  if (Number.isFinite(saved) && RATES.includes(saved)) rate.value = saved
+}
+
+const rateText = computed(() => (rate.value === 1 ? '倍速' : `${rate.value}x`))
+
+/* ---------- 片头 / 片尾跳过 ---------- */
+function setSkip(kind: 'intro' | 'outro', seconds: number) {
+  if (kind === 'intro') skipIntro.value = seconds
+  else skipOutro.value = seconds
+  persist(
+    'kaytv.skip',
+    JSON.stringify({ intro: skipIntro.value, outro: skipOutro.value })
+  )
+  closeMenu()
+  toast.info(
+    seconds
+      ? `已设置跳过${kind === 'intro' ? '片头' : '片尾'} ${seconds} 秒`
+      : `已取消跳过${kind === 'intro' ? '片头' : '片尾'}`
+  )
+  wake()
+}
+
+function restoreSkip() {
+  try {
+    const saved = JSON.parse(readStored('kaytv.skip') || '{}') as {
+      intro?: number
+      outro?: number
+    }
+    skipIntro.value = Number(saved.intro) || 0
+    skipOutro.value = Number(saved.outro) || 0
+  } catch {
+    /* ignore */
+  }
+}
+
+function skipText(kind: 'intro' | 'outro'): string {
+  const value = kind === 'intro' ? skipIntro.value : skipOutro.value
+  return value ? `${kind === 'intro' ? '头' : '尾'} ${value}s` : '片头/尾'
+}
+
+function handleSkip(element: HTMLVideoElement) {
+  const intro = skipIntro.value
+  const outro = skipOutro.value
+  if (!intro && !outro) return
+  const current = element.currentTime
+  if (intro > 0 && !introSkipped) {
+    if (element.duration > intro * 2 && current < intro) {
+      introSkipped = true
+      element.currentTime = intro
+      toast.info('已跳过片头')
+    } else if (current >= intro) {
+      introSkipped = true
+    }
+  }
+  if (outro > 0 && !outroFired && current > intro && element.duration - current <= outro) {
+    outroFired = true
+    if (canNext.value) {
+      toast.info('已跳过片尾，播放下一集')
+      nextEpisode()
+    } else {
+      element.currentTime = Math.max(0, element.duration - 0.2)
+      element.pause()
+      toast.info('已跳到本片结尾')
+    }
+  }
+}
+
+/* ---------- 画面填充 ---------- */
+function toggleFill() {
+  fillMode.value = fillMode.value === 'contain' ? 'cover' : 'contain'
+  persist('kaytv.fill', fillMode.value)
+  closeMenu()
+  toast.info(fillMode.value === 'cover' ? '画面已铺满（边缘会被裁掉）' : '画面按原始比例完整显示')
+  wake()
+}
+
+function restoreFill() {
+  fillMode.value = readStored('kaytv.fill') === 'cover' ? 'cover' : 'contain'
+}
+
+/* ---------- 小窗 / 投屏 ---------- */
+const canPip = computed(() => Boolean((document as Document & { pictureInPictureEnabled?: boolean }).pictureInPictureEnabled))
+const canCast = computed(
+  () =>
+    (runtime.native && !settings.tvMode) ||
+    typeof (document as Document & { getAvailableMediaSinks?: unknown }).getAvailableMediaSinks ===
+      'function'
+)
+
+function togglePip() {
+  const element = video.value as
+    | (HTMLVideoElement & { requestPictureInPicture?: () => Promise<unknown> })
+    | null
+  if (!element) return
+  if (document.pictureInPictureElement) {
+    void document.exitPictureInPicture().catch(() => {})
+    return
+  }
+  if (!element.requestPictureInPicture) {
+    toast.error('当前设备不支持小窗播放')
+    return
+  }
+  void element.requestPictureInPicture().catch(() => toast.error('小窗播放失败，先暂停再试一次'))
+  wake()
+}
+
+function openCast() {
+  const element = video.value as
+    | (HTMLVideoElement & { remote?: { prompt?: () => Promise<unknown> } })
+    | null
+  const remote = element?.remote
+  if (!remote?.prompt) {
+    toast.info(
+      runtime.native
+        ? '应用内没有可用的投屏通道，请用系统下拉菜单里的「投屏 / 多屏互动」镜像本屏幕'
+        : '当前设备没有可用的投屏通道，建议用电视端或 HDMI'
+    )
+    return
+  }
+  void remote.prompt().catch(() => toast.error('没有发现可投屏设备'))
+  wake()
+}
+
+/* ---------- 菜单 ---------- */
+function toggleMenu(name: string) {
+  menu.value = menu.value === name ? '' : name
+  wake()
+}
+
+function closeMenu() {
+  menu.value = ''
+}
+
+/* ---------- 播放源 ---------- */
+const vodSources = computed(() => settings.activeVod)
+const liveSources = computed(() => settings.activeLive)
+const currentSourceId = computed(
+  () => (isLive.value ? player.live?.sourceId || '' : vod.value?.detail.sourceId || '') || ''
+)
+
+function filterSources(list: { id: string; name: string }[]) {
+  const keyword = sourceQuery.value.trim().toLowerCase()
+  if (!keyword) return list
+  return list.filter((item) => item.name.toLowerCase().includes(keyword))
+}
+
+const sourceOptions = computed(() =>
+  filterSources(isLive.value ? liveSources.value : vodSources.value)
+)
+
+async function pickVodSource(sourceId: string, sourceName: string) {
+  const current = player.vod
+  if (!current || sourcePicking.value) return
+  if (sourceId === current.detail.sourceId) {
+    toast.info(`当前就是「${sourceName}」在播`)
+    return
+  }
+  const title = current.detail.name
+  if (!title) return
+  sourcePicking.value = sourceId
+  const position = currentPosition()
+  try {
+    const result = await api.search(title, [sourceId])
+    const hit = result.items.find((item) => sameTitle(item.name, title))
+    if (!hit) {
+      toast.error(`「${sourceName}」没有搜到这部片`)
+      return
+    }
+    const next = await api.detail(hit.sourceId, hit.id)
+    if (!next.playable || !next.lines.length) {
+      toast.error(`「${sourceName}」搜到了但没有可播线路`)
+      return
+    }
+    const episodeName =
+      current.detail.lines[current.lineIndex]?.episodes[current.episodeIndex]?.name || ''
+    const picked = pickEpisode(next, episodeName, current.episodeIndex)
+    saveProgress(true)
+    resetRecovery()
+    error.value = ''
+    player.openVod(next, picked.lineIndex, picked.episodeIndex, position)
+    toast.success(`已切换到片源「${next.sourceName}」`)
+    closeDrawer()
+  } catch {
+    toast.error(`「${sourceName}」连接失败，换一个试试`)
+  } finally {
+    sourcePicking.value = ''
+  }
+  wake()
+}
+
+async function pickLiveSource(sourceId: string, sourceName: string) {
+  const live = player.live
+  if (!live || sourcePicking.value) return
+  if (sourceId === live.sourceId) {
+    toast.info(`当前就是「${sourceName}」在播`)
+    return
+  }
+  const name = player.title
+  sourcePicking.value = sourceId
+  try {
+    const data = await api.live(sourceId)
+    const channel =
+      data.channels.find((item) => item.name === name) ||
+      data.channels.find((item) => item.name.includes(name) || name.includes(item.name))
+    if (!channel) {
+      toast.error(`「${sourceName}」里没有这个频道`)
+      return
+    }
+    const index = data.channels.findIndex((item) => item.id === channel.id)
+    resetRecovery()
+    error.value = ''
+    player.openLive(data.channels, Math.max(0, index), data.sourceName, channel.group, sourceId)
+    toast.success(`已切换到直播源「${data.sourceName}」`)
+    closeDrawer()
+  } catch {
+    toast.error(`「${sourceName}」连接失败，换一个试试`)
+  } finally {
+    sourcePicking.value = ''
+  }
+  wake()
+}
+
+function selectSource(sourceId: string, sourceName: string) {
+  if (isLive.value) void pickLiveSource(sourceId, sourceName)
+  else void pickVodSource(sourceId, sourceName)
+}
+
 function nextEpisode() {
   if (!vod.value) return
   saveProgress(true)
@@ -869,14 +1201,19 @@ function onEnded() {
   }
 }
 
-function openDrawer() {
-  if (drawerOpen.value) return
+function openDrawer(tab?: 'list' | 'sources') {
+  if (tab) drawerTab.value = tab
+  closeMenu()
+  if (drawerOpen.value) {
+    wake()
+    return
+  }
   drawerOpen.value = true
   drawerQuery.value = ''
   wake()
   void nextTick(() => {
     const current = root.value?.querySelector<HTMLElement>('.drawer-item.is-current')
-    const first = root.value?.querySelector<HTMLElement>('.drawer-item')
+    const first = root.value?.querySelector<HTMLElement>('.drawer-item, .player-drawer .chip')
     ;(current || first)?.focus({ preventScroll: true })
     current?.scrollIntoView({ block: 'center' })
   })
@@ -889,14 +1226,14 @@ function closeDrawer() {
   wake()
 }
 
-function toggleDrawer() {
-  if (drawerOpen.value) closeDrawer()
-  else openDrawer()
+function toggleDrawer(tab: 'list' | 'sources') {
+  if (drawerOpen.value && drawerTab.value === tab) closeDrawer()
+  else openDrawer(tab)
 }
 
 function drawerFocus(delta: number) {
   const items = Array.from(
-    root.value?.querySelectorAll<HTMLElement>('.drawer-item, .drawer-lines .chip') || []
+    root.value?.querySelectorAll<HTMLElement>('.drawer-item, .player-drawer .chip') || []
   )
   if (!items.length) return
   const active = document.activeElement as HTMLElement | null
@@ -911,29 +1248,91 @@ function drawerFocus(delta: number) {
   items[index]?.scrollIntoView({ block: 'nearest' })
 }
 
-function toggleFullscreen() {
-  const element = root.value
-  if (!element) return
-  if (document.fullscreenElement) {
-    void document.exitFullscreen()
-  } else {
-    void element.requestFullscreen?.().catch(() => {
-      toast.error('当前设备不支持全屏')
-    })
+interface SystemBarsPlugin {
+  hide?: (options: { bar: string }) => Promise<unknown>
+  show?: (options: { bar: string }) => Promise<unknown>
+}
+
+function setSystemBarsHidden(hidden: boolean) {
+  const capacitor = (window as { Capacitor?: { Plugins?: Record<string, SystemBarsPlugin> } })
+    .Capacitor
+  const bars = capacitor?.Plugins?.SystemBars
+  const action = bars?.[hidden ? 'hide' : 'show']
+  if (!action) return
+  try {
+    void action.call(bars, { bar: '' }).catch(() => {})
+  } catch {
+    /* ignore */
   }
 }
 
+async function lockOrientation(value: 'landscape' | 'any') {
+  const orientation = screen.orientation as
+    | (ScreenOrientation & { lock?: (target: string) => Promise<void> })
+    | undefined
+  if (!orientation?.lock) return
+  try {
+    await orientation.lock.call(orientation, value)
+  } catch {
+    /* 系统未授权时保持当前方向 */
+  }
+}
+
+function enterFullscreen() {
+  if (runtime.native) {
+    immersive.value = true
+    isFullscreen.value = true
+    setSystemBarsHidden(true)
+    void lockOrientation('landscape')
+    return
+  }
+  const element = root.value
+  if (!element) return
+  void element
+    .requestFullscreen({ navigationUI: 'hide' })
+    .catch(() => toast.error('当前设备不支持全屏'))
+}
+
+function exitFullscreen() {
+  if (immersive.value) {
+    immersive.value = false
+    isFullscreen.value = false
+    setSystemBarsHidden(false)
+    void lockOrientation('any')
+    return
+  }
+  if (document.fullscreenElement) void document.exitFullscreen().catch(() => {})
+}
+
+function toggleFullscreen() {
+  if (immersive.value || document.fullscreenElement) exitFullscreen()
+  else enterFullscreen()
+  wake()
+}
+
 function onFullscreenChange() {
-  isFullscreen.value = Boolean(document.fullscreenElement)
+  if (!immersive.value) isFullscreen.value = Boolean(document.fullscreenElement)
 }
 
 function wake() {
   controlsVisible.value = true
   window.clearTimeout(hideTimer)
-  if (!playing.value || drawerOpen.value || error.value) return
+  if (!playing.value || drawerOpen.value || error.value || menu.value) return
   hideTimer = window.setTimeout(() => {
     controlsVisible.value = false
   }, 3800)
+}
+
+function goBack() {
+  if (menu.value) {
+    closeMenu()
+    return
+  }
+  if (drawerOpen.value) {
+    closeDrawer()
+    return
+  }
+  closePlayer()
 }
 
 function onKeydown(event: KeyboardEvent) {
@@ -949,22 +1348,19 @@ function onKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape') {
     event.preventDefault()
     event.stopPropagation()
-    if (drawerOpen.value) closeDrawer()
-    else closePlayer()
+    goBack()
     return
   }
   if (event.key === 'BrowserBack') {
     event.preventDefault()
     event.stopPropagation()
-    if (drawerOpen.value) closeDrawer()
-    else closePlayer()
+    goBack()
     return
   }
   if (event.key === 'Backspace' && !typing) {
     event.preventDefault()
     event.stopPropagation()
-    if (drawerOpen.value) closeDrawer()
-    else closePlayer()
+    goBack()
     return
   }
 
@@ -1043,8 +1439,13 @@ function closePlayer() {
 
 function onPopState() {
   if (!player.open) return
+  if (menu.value || drawerOpen.value) {
+    goBack()
+    window.history.pushState({ ...(window.history.state || {}), kaytvPlayer: true }, '')
+    pushedState = true
+    return
+  }
   pushedState = false
-  if (drawerOpen.value) closeDrawer()
   closePlayer()
 }
 
@@ -1059,6 +1460,7 @@ function onVisibilityChange() {
     return
   }
   wake()
+  if (immersive.value) setSystemBarsHidden(true)
   if (!resumeAfterHide || !player.open) return
   resumeAfterHide = false
   if (error.value) return
@@ -1093,6 +1495,7 @@ watch(
       drawerQuery.value = ''
       error.value = ''
       controlsVisible.value = true
+      if (runtime.native && !settings.tvMode) enterFullscreen()
       void nextTick(() => {
         root.value?.focus({ preventScroll: true })
         wake()
@@ -1101,6 +1504,9 @@ watch(
       window.clearTimeout(hideTimer)
       document.body.style.overflow = ''
       drawerOpen.value = false
+      drawerTab.value = 'list'
+      closeMenu()
+      exitFullscreen()
       clearEngines()
       if (pushedState) {
         pushedState = false
@@ -1124,6 +1530,9 @@ watch(drawerOpen, () => wake())
 
 onMounted(() => {
   restoreVolume()
+  restoreRate()
+  restoreSkip()
+  restoreFill()
   window.addEventListener('popstate', onPopState)
   window.addEventListener('beforeunload', onBeforeUnload)
   document.addEventListener('visibilitychange', onVisibilityChange)
@@ -1137,6 +1546,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('fullscreenchange', onFullscreenChange)
   window.clearTimeout(hideTimer)
   clearEngines()
+  exitFullscreen()
   document.body.style.overflow = ''
 })
 </script>
@@ -1160,14 +1570,15 @@ onBeforeUnmount(() => {
         webkit-playsinline
         preload="auto"
         :poster="player.poster ? mediaUrl(player.poster) : ''"
+        :style="{ objectFit: fillMode }"
         @loadedmetadata="onLoadedMetadata"
         @timeupdate="onTimeUpdate"
         @durationchange="onDurationChange"
         @play="playing = true; waiting = false; clearFallback(); wake()"
         @pause="playing = false; wake()"
-        @waiting="waiting = true"
-        @playing="waiting = false; error = ''"
-        @canplay="waiting = false; clearFallback()"
+        @waiting="onWaiting"
+        @playing="waiting = false; error = ''; clearStall()"
+        @canplay="waiting = false; clearFallback(); clearStall()"
         @ended="onEnded"
         @error="onNativeError"
         @click="togglePlay"
@@ -1189,13 +1600,21 @@ onBeforeUnmount(() => {
           </p>
           <div class="player-error-actions">
             <button class="btn primary" @click="retryPlayback">重试当前线路</button>
-            <button class="btn" @click="openDrawer">{{ isLive ? '切换频道' : '换线路/选集' }}</button>
+            <button class="btn" @click="openDrawer(isLive ? 'list' : 'sources')">{{ isLive ? '切换频道' : '线路与片源' }}</button>
             <button v-if="!isLive" class="btn" @click="void switchSourceNow()">换个片源</button>
             <button class="btn ghost" @click="void copyPlaybackUrl()">复制播放地址</button>
             <button class="btn ghost" @click="closePlayer">关闭</button>
           </div>
         </div>
       </div>
+
+      <button
+        v-if="menu"
+        class="menu-scrim"
+        type="button"
+        aria-label="关闭菜单"
+        @click="closeMenu"
+      />
 
       <div class="player-chrome player-top" :class="{ hidden: !controlsVisible || drawerOpen }">
         <button class="player-btn round" type="button" aria-label="返回" @click="closePlayer">
@@ -1212,13 +1631,48 @@ onBeforeUnmount(() => {
         <div class="player-top-right">
           <span class="player-host">{{ hostOf(player.currentUrl) }}</span>
           <button
+            v-if="canPip"
             class="player-btn round"
             type="button"
-            :aria-label="isFullscreen ? '退出全屏' : '全屏'"
-            @click="toggleFullscreen"
+            aria-label="小窗播放"
+            @click="togglePip"
           >
-            <AppIcon name="fullscreen" :size="20" />
+            <AppIcon name="pip" :size="20" />
           </button>
+          <button
+            v-if="canCast"
+            class="player-btn round"
+            type="button"
+            aria-label="投屏"
+            @click="openCast"
+          >
+            <AppIcon name="cast" :size="20" />
+          </button>
+          <div class="menu-anchor">
+            <button
+              class="player-btn round"
+              type="button"
+              :class="{ active: menu === 'more' }"
+              aria-label="更多设置"
+              @click="toggleMenu('more')"
+            >
+              <AppIcon name="more" :size="20" />
+            </button>
+            <div v-if="menu === 'more'" class="player-menu">
+              <button class="menu-item" type="button" @click="toggleFill">
+                画面填充<span class="menu-value">{{ fillMode === 'cover' ? '铺满' : '适应' }}</span>
+              </button>
+              <button class="menu-item" type="button" @click="closeMenu(); retryPlayback()">
+                重新载入线路<span class="menu-value">重试</span>
+              </button>
+              <button v-if="!isLive" class="menu-item" type="button" @click="closeMenu(); void switchSourceNow()">
+                换个片源试试<span class="menu-value">自动</span>
+              </button>
+              <button class="menu-item" type="button" @click="void copyPlaybackUrl()">
+                复制播放地址<span class="menu-value">调试</span>
+              </button>
+            </div>
+          </div>
           <button class="player-btn round" type="button" aria-label="关闭" @click="closePlayer">
             <AppIcon name="close" :size="22" />
           </button>
@@ -1333,18 +1787,92 @@ onBeforeUnmount(() => {
             <span v-if="!isLive" class="player-clock">{{ clockText }} / {{ durationText }}</span>
           </div>
           <div class="controls-right">
+            <div v-if="!isLive" class="menu-anchor">
+              <button
+                class="player-btn pill"
+                type="button"
+                :class="{ active: menu === 'rate' || rate !== 1 }"
+                @click="toggleMenu('rate')"
+              >
+                <AppIcon name="gauge" :size="16" />
+                {{ rateText }}
+              </button>
+              <div v-if="menu === 'rate'" class="player-menu menu-row">
+                <button
+                  v-for="item in RATES"
+                  :key="item"
+                  class="menu-item"
+                  :class="{ active: item === rate }"
+                  type="button"
+                  @click="setRate(item)"
+                >
+                  {{ item === 1 ? '常速' : `${item}x` }}
+                </button>
+              </div>
+            </div>
+            <div v-if="!isLive" class="menu-anchor">
+              <button
+                class="player-btn pill"
+                type="button"
+                :class="{ active: menu === 'skip' || skipIntro > 0 || skipOutro > 0 }"
+                @click="toggleMenu('skip')"
+              >
+                片头/尾
+              </button>
+              <div v-if="menu === 'skip'" class="player-menu menu-skip">
+                <p class="menu-label">跳过片头</p>
+                <div class="menu-chips">
+                  <button
+                    v-for="seconds in SKIP_STEPS"
+                    :key="`intro-${seconds}`"
+                    class="chip"
+                    :class="{ active: seconds === skipIntro }"
+                    type="button"
+                    @click="setSkip('intro', seconds)"
+                  >
+                    {{ seconds ? `${seconds} 秒` : '不跳' }}
+                  </button>
+                </div>
+                <p class="menu-label">跳过片尾（自动下一集）</p>
+                <div class="menu-chips">
+                  <button
+                    v-for="seconds in SKIP_STEPS"
+                    :key="`outro-${seconds}`"
+                    class="chip"
+                    :class="{ active: seconds === skipOutro }"
+                    type="button"
+                    @click="setSkip('outro', seconds)"
+                  >
+                    {{ seconds ? `${seconds} 秒` : '不跳' }}
+                  </button>
+                </div>
+              </div>
+            </div>
+            <button class="player-btn pill" type="button" @click="toggleDrawer('sources')">
+              <AppIcon name="server" :size="16" />
+              播放源
+            </button>
+            <button class="player-btn pill" type="button" @click="toggleDrawer('list')">
+              <AppIcon :name="isLive ? 'tv' : 'film'" :size="16" />
+              {{ isLive ? '频道' : '选集' }}
+            </button>
             <button v-if="canNext" class="player-btn pill" type="button" @click="nextEpisode">
               <AppIcon name="right" :size="16" />
               下一集
             </button>
-            <button class="player-btn pill" type="button" @click="toggleDrawer">
-              <AppIcon :name="isLive ? 'tv' : 'film'" :size="16" />
-              {{ isLive ? '频道' : '选集' }}
+            <button
+              v-if="!settings.tvMode"
+              class="player-btn round"
+              type="button"
+              :aria-label="isFullscreen ? '退出全屏' : '全屏'"
+              @click="toggleFullscreen"
+            >
+              <AppIcon :name="isFullscreen ? 'fullscreenExit' : 'fullscreen'" :size="20" />
             </button>
           </div>
         </div>
 
-        <p class="player-hint">
+        <p v-if="!runtime.native || settings.tvMode" class="player-hint">
           <span>← → {{ isLive ? '切换频道' : '快退/快进 15 秒' }}</span>
           <span>↑ 打开{{ isLive ? '频道' : '选集' }}列表</span>
           <span>Enter 播放/暂停</span>
@@ -1356,20 +1884,39 @@ onBeforeUnmount(() => {
         <aside v-if="drawerOpen" class="player-drawer">
           <div class="drawer-head">
             <div>
-              <h3>{{ isLive ? '切换频道' : '选集' }}</h3>
-              <p>{{ isLive ? `${channels.length} 个频道` : `${lines.length} 条线路 · ${line?.episodes.length || 0} 集` }}</p>
+              <h3>{{ drawerTitle }}</h3>
+              <p>{{ drawerMeta }}</p>
             </div>
             <button class="player-btn round small" type="button" aria-label="关闭列表" @click="closeDrawer">
               <AppIcon name="close" :size="18" />
             </button>
           </div>
 
-          <template v-if="isLive">
-            <div class="search-field drawer-search">
+          <div class="drawer-tabs">
+            <button
+              class="drawer-tab"
+              :class="{ active: drawerTab === 'list' }"
+              type="button"
+              @click="drawerTab = 'list'"
+            >
+              {{ isLive ? '频道' : '选集' }}
+            </button>
+            <button
+              class="drawer-tab"
+              :class="{ active: drawerTab === 'sources' }"
+              type="button"
+              @click="drawerTab = 'sources'"
+            >
+              播放源
+            </button>
+          </div>
+
+          <template v-if="drawerTab === 'list'">
+            <div v-if="isLive" class="search-field drawer-search">
               <AppIcon class="search-icon" name="search" :size="16" />
               <input v-model="drawerQuery" class="input" type="search" placeholder="搜索频道" autocomplete="off" />
             </div>
-            <div class="drawer-scroll">
+            <div v-if="isLive" class="drawer-scroll">
               <button
                 v-for="entry in drawerChannels"
                 :key="entry.channel.id"
@@ -1383,10 +1930,23 @@ onBeforeUnmount(() => {
               </button>
               <p v-if="!drawerChannels.length" class="drawer-empty">没有匹配的频道</p>
             </div>
+            <div v-else class="drawer-scroll drawer-episodes">
+              <button
+                v-for="(item, index) in line?.episodes || []"
+                :key="`${index}-${item.url}`"
+                class="drawer-item episode"
+                :class="{ 'is-current': index === player.vod?.episodeIndex }"
+                type="button"
+                @click="selectEpisode(index)"
+              >
+                <span class="drawer-item-name">{{ item.name }}</span>
+                <span v-if="index === player.vod?.episodeIndex" class="drawer-item-meta">播放中</span>
+              </button>
+            </div>
           </template>
 
-          <template v-else>
-            <div class="drawer-lines">
+          <div v-else class="drawer-scroll sources-panel">
+            <div v-if="!isLive" class="drawer-lines">
               <div v-for="group in lineGroups" :key="group.label" class="line-group">
                 <p class="line-group-head">
                   {{ group.label }}
@@ -1410,57 +1970,72 @@ onBeforeUnmount(() => {
                 </div>
               </div>
             </div>
-            <div class="drawer-scroll drawer-episodes">
-              <button
-                v-for="(item, index) in line?.episodes || []"
-                :key="`${index}-${item.url}`"
-                class="drawer-item episode"
-                :class="{ 'is-current': index === player.vod?.episodeIndex }"
-                type="button"
-                @click="selectEpisode(index)"
-              >
-                <span class="drawer-item-name">{{ item.name }}</span>
-                <span v-if="index === player.vod?.episodeIndex" class="drawer-item-meta">播放中</span>
-              </button>
-            </div>
-          </template>
-          <div v-if="audioTracks.length > 1 || subtitleTracks.length" class="drawer-tracks">
-            <div v-if="audioTracks.length > 1" class="track-row">
-              <p class="track-label">音轨</p>
-              <div class="track-chips">
+
+            <div class="source-block">
+              <p class="line-group-head">
+                {{ isLive ? '直播源' : '自定义选源' }}
+                <span class="line-group-hint">{{ isLive ? '用当前频道名去其他源里找' : '用当前片名去该源里找' }}</span>
+              </p>
+              <div class="search-field source-search">
+                <AppIcon class="search-icon" name="search" :size="16" />
+                <input v-model="sourceQuery" class="input" type="search" placeholder="筛选片源名称" autocomplete="off" />
+              </div>
+              <div class="source-chips">
                 <button
-                  v-for="(name, index) in audioTracks"
-                  :key="`audio-${index}`"
+                  v-for="item in sourceOptions"
+                  :key="item.id"
                   class="chip"
-                  :class="{ active: index === audioIndex }"
+                  :class="{ active: item.id === currentSourceId }"
+                  :disabled="!!sourcePicking && sourcePicking !== item.id"
                   type="button"
-                  @click="setAudioTrack(index)"
+                  @click="selectSource(item.id, item.name)"
                 >
-                  {{ name }}
+                  {{ item.name }}
+                  <span v-if="item.id === currentSourceId" class="count current">当前</span>
+                  <span v-else-if="sourcePicking === item.id" class="count">查找中…</span>
                 </button>
+                <p v-if="!sourceOptions.length" class="drawer-empty">没有匹配的片源</p>
               </div>
             </div>
-            <div v-if="subtitleTracks.length" class="track-row">
-              <p class="track-label">字幕</p>
-              <div class="track-chips">
-                <button
-                  class="chip"
-                  :class="{ active: subtitleIndex < 0 }"
-                  type="button"
-                  @click="setSubtitleTrack(-1)"
-                >
-                  关闭
-                </button>
-                <button
-                  v-for="(name, index) in subtitleTracks"
-                  :key="`sub-${index}`"
-                  class="chip"
-                  :class="{ active: index === subtitleIndex }"
-                  type="button"
-                  @click="setSubtitleTrack(index)"
-                >
-                  {{ name }}
-                </button>
+
+            <div v-if="audioTracks.length > 1 || subtitleTracks.length" class="drawer-tracks">
+              <div v-if="audioTracks.length > 1" class="track-row">
+                <p class="track-label">音轨</p>
+                <div class="track-chips">
+                  <button
+                    v-for="(name, index) in audioTracks"
+                    :key="`audio-${index}`"
+                    class="chip"
+                    :class="{ active: index === audioIndex }"
+                    type="button"
+                    @click="setAudioTrack(index)"
+                  >
+                    {{ name }}
+                  </button>
+                </div>
+              </div>
+              <div v-if="subtitleTracks.length" class="track-row">
+                <p class="track-label">字幕</p>
+                <div class="track-chips">
+                  <button
+                    class="chip"
+                    :class="{ active: subtitleIndex < 0 }"
+                    type="button"
+                    @click="setSubtitleTrack(-1)"
+                  >
+                    关闭
+                  </button>
+                  <button
+                    v-for="(name, index) in subtitleTracks"
+                    :key="`sub-${index}`"
+                    class="chip"
+                    :class="{ active: index === subtitleIndex }"
+                    type="button"
+                    @click="setSubtitleTrack(index)"
+                  >
+                    {{ name }}
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -1900,6 +2475,11 @@ onBeforeUnmount(() => {
   overflow-y: auto;
   padding-right: 2px;
 }
+.sources-panel .drawer-lines,
+.sources-panel .drawer-tracks {
+  max-height: none;
+  overflow: visible;
+}
 .drawer-tracks {
   flex: none;
   display: flex;
@@ -2040,6 +2620,162 @@ onBeforeUnmount(() => {
   opacity: 0;
 }
 
+.menu-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  cursor: default;
+}
+
+.menu-anchor {
+  position: relative;
+  display: inline-flex;
+}
+
+.player-menu {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  right: 0;
+  z-index: 8;
+  min-width: 176px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: rgba(14, 16, 22, 0.97);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(16px);
+}
+
+.player-top-right .player-menu {
+  top: calc(100% + 8px);
+  bottom: auto;
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.menu-item:hover,
+.menu-item:focus {
+  background: rgba(255, 255, 255, 0.08);
+  outline: none;
+}
+.menu-item.active {
+  color: var(--accent);
+  background: rgba(255, 180, 84, 0.14);
+}
+
+.menu-value {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.menu-row {
+  flex-direction: row;
+  flex-wrap: wrap;
+  min-width: 0;
+  max-width: 320px;
+}
+.menu-row .menu-item {
+  min-width: 58px;
+  justify-content: center;
+}
+
+.menu-skip {
+  min-width: 268px;
+  gap: 6px;
+}
+.menu-label {
+  margin: 4px 2px 0;
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--muted-2);
+}
+.menu-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.menu-chips .chip {
+  min-width: 52px;
+  justify-content: center;
+}
+
+.player-btn.active {
+  color: var(--accent);
+  border-color: rgba(255, 180, 84, 0.42);
+  background: rgba(255, 180, 84, 0.16);
+}
+
+.drawer-tabs {
+  display: flex;
+  gap: 8px;
+  padding: 4px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+}
+.drawer-tab {
+  flex: 1;
+  height: 36px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.drawer-tab.active {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--text);
+}
+
+.sources-panel {
+  gap: 16px;
+}
+.source-block {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.source-search .input {
+  height: 38px;
+  padding-left: 38px;
+  font-size: 13px;
+}
+.source-search .search-icon {
+  left: 12px;
+}
+.source-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.source-chips .chip {
+  max-width: 100%;
+}
+.source-chips .chip:disabled {
+  opacity: 0.45;
+}
+
 @media (max-width: 720px) {
   .player-top {
     padding: 14px 12px 48px;
@@ -2084,6 +2820,33 @@ onBeforeUnmount(() => {
   }
   .player-drawer {
     width: 100%;
+  }
+  .player-controls {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .controls-right {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+  .player-btn.pill {
+    height: 34px;
+    padding: 0 10px;
+    font-size: 12px;
+  }
+  .player-btn.round {
+    width: 36px;
+    height: 36px;
+  }
+  .player-menu {
+    max-width: calc(100vw - 28px);
+  }
+  .menu-skip {
+    min-width: 0;
+    width: 268px;
+  }
+  .drawer-scroll {
+    gap: 8px;
   }
 }
 </style>
