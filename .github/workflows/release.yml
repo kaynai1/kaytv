@@ -77,6 +77,15 @@ jobs:
       - run: npm ci
         working-directory: desktop
 
+      - name: 补装 Electron 运行时
+        working-directory: desktop
+        run: |
+          # npm ci 在 runner 上不会跑 Electron 的二进制下载脚本，这里显式补齐
+          if [ ! -f node_modules/electron/dist/electron.exe ]; then
+            node node_modules/electron/install.js
+          fi
+          du -sh node_modules/electron/dist
+
       - run: npm run dist
         working-directory: desktop
 
@@ -116,9 +125,14 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - uses: android-actions/setup-android@v3
-
-      - run: yes | sdkmanager "platforms;android-36" "build-tools;36.0.0"
+      - name: 准备 Android SDK
+        run: |
+          SDKMGR="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          [ -x "$SDKMGR" ] || SDKMGR="$(find "$ANDROID_HOME/cmdline-tools" -maxdepth 3 -type f -name sdkmanager | head -1)"
+          echo "sdkmanager: $SDKMGR"
+          yes | "$SDKMGR" --licenses > /dev/null 2>&1 || true
+          yes | "$SDKMGR" --install "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+          echo "sdk.dir=$ANDROID_HOME" > mobile/android/local.properties
 
       - run: npm ci
       - run: npm ci
@@ -192,6 +206,7 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ needs.meta.outputs.version }}
           generate_release_notes: true
           append_body: true
           files: staged/*
