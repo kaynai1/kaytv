@@ -11,7 +11,28 @@
 - **多用户**：后台可创建管理员 / 普通用户，观看模式可设为「公开」或「登录观看」
 - **电视优先**：遥控器方向键空间导航、全屏播放器、选集抽屉、大字号海报墙
 - **源管理**：网页后台增删启停直播 / 影视源，测试连通性，导入导出配置
-- **客户端**：NAS 网页版、Android TV APK、Windows 安装包 / 免安装版
+- **客户端**：Windows 安装包 / 免安装版、Android 手机 APK、Android TV APK、NAS 网页版
+
+## 下载即用
+
+三个客户端都是独立完整的，下载安装后直接打开就能搜索和播放，不需要服务器、不需要配置、不需要注册：
+
+| 设备 | 文件 | 说明 |
+| --- | --- | --- |
+| Windows 10/11 | `KayTV-<版本>-windows-setup.exe` | 安装包，自动创建快捷方式 |
+| Windows 免安装 | `KayTV-<版本>-windows-portable.exe` | 单个 exe，拷到哪跑到哪 |
+| 安卓手机 / 平板 | `KayTV-<版本>-phone.apk` | 允许横竖屏，支持后台返回与常亮 |
+| 安卓电视 / 盒子 | `KayTV-<版本>-tv.apk` | Leanback 启动器、遥控器焦点、锁横屏 |
+
+固定直链（永远指向最新版）：
+
+```
+https://github.com/kaynai1/kaytv/releases/latest/download/KayTV-0.3.0-windows-setup.exe
+```
+
+版本号会变，所以更省事的做法是直接打开 <https://github.com/kaynai1/kaytv/releases/latest> 选自己那台设备的文件。应用内 **设置 → 版本更新** 会显示二维码，手机扫码即可打开这个页面，电视端也能用浏览器直接下载。
+
+Windows 首次运行可能弹 SmartScreen，点「更多信息 → 仍要运行」；安卓需要允许「安装未知来源应用」。
 
 ## 1. NAS 部署
 
