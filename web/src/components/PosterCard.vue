@@ -69,6 +69,7 @@ function onError() {
     ref="cardEl"
     class="poster-card"
     :class="{ compact: props.compact }"
+    :data-play-key="`${props.item.sourceId}:${props.item.id}`"
     data-nav
     type="button"
     @click="$emit('select', props.item)"

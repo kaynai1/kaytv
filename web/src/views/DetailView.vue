@@ -85,7 +85,10 @@ function onPosterError() {
   } else posterFailed.value = true
 }
 
+let loadToken = 0
+
 async function load() {
+  const token = ++loadToken
   loading.value = true
   error.value = ''
   detail.value = null
@@ -95,6 +98,7 @@ async function load() {
     await settings.init()
     if (!settings.online) throw new Error('影视详情暂时不可用，请检查网络或切换数据来源')
     const result = await api.detail(sourceId.value, vodId.value)
+    if (token !== loadToken) return
     detail.value = result
     tmdbEnsure(result.name, result.year, result.contentType || '')
     const entry = library.progressOf(result.sourceId, result.id)
@@ -104,9 +108,11 @@ async function load() {
         : 0
     activeLine.value = initialLine
   } catch (caught) {
+    if (token !== loadToken) return
     error.value = caught instanceof Error ? caught.message : '加载详情失败'
   } finally {
-    loading.value = false
+    // 快速切换到另一部片时，旧请求不能结束新详情的加载态
+    if (token === loadToken) loading.value = false
   }
 }
 

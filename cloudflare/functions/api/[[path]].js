@@ -302,7 +302,9 @@ async function discoverKanju(input) {
   )
   if (!home.ok) throw new Error(`打开官网失败：HTTP ${home.status}`)
   const finalUrl = home.url || `${baseUrl}/`
-  const finalBase = new URL(finalUrl).origin
+  // 跳转后的地址也要过一遍校验，避免被重定向到内网或非 http(s)
+  const finalBase = normalizeKanjuUrl(finalUrl)
+  if (!finalBase) throw new Error('官网跳转到了不可用的地址')
   const html = (await home.text()).slice(0, KANJU_MAX_BODY)
   const scriptUrls = []
   for (const match of html.matchAll(/<script[^>]+src=["']([^"']+)["']/gi)) scriptUrls.push(match[1])
@@ -530,14 +532,26 @@ async function currentUser(request, env) {
   const header = request.headers.get('authorization') || ''
   const token = header.replace(/^Bearer\s+/i, '').trim()
   if (!token) return null
-  const row = await env.DB.prepare(
-    `SELECT u.id, u.username, u.status, u.device, u.created_at, u.last_seen,
-            s.id AS session_id, s.last_seen AS session_seen
-     FROM sessions s JOIN users u ON u.id = s.user_id
-     WHERE s.token = ?1 AND s.expires_at > ?2`
-  )
-    .bind(token, Date.now())
-    .first()
+  const hashed = bytesToHex(await sha256(token))
+  const lookup = (value) =>
+    env.DB.prepare(
+      `SELECT u.id, u.username, u.status, u.device, u.created_at, u.last_seen,
+              s.id AS session_id, s.last_seen AS session_seen
+       FROM sessions s JOIN users u ON u.id = s.user_id
+       WHERE s.token = ?1 AND s.expires_at > ?2`
+    )
+      .bind(value, Date.now())
+      .first()
+  let row = await lookup(hashed)
+  if (!row) {
+    // 旧版本会话存的是明文 token，命中后顺手升级为哈希
+    row = await lookup(token)
+    if (row) {
+      await env.DB.prepare('UPDATE sessions SET token = ?1 WHERE token = ?2')
+        .bind(hashed, token)
+        .run()
+    }
+  }
   if (!row || row.status !== 'active') return null
   if (Date.now() - (row.session_seen || 0) > 5 * 60 * 1000) {
     await env.DB.prepare('UPDATE sessions SET last_seen = ?1 WHERE id = ?2').bind(Date.now(), row.session_id).run()
@@ -547,6 +561,7 @@ async function currentUser(request, env) {
 
 async function createSession(env, userId, request, device) {
   const token = randomToken()
+  const stored = bytesToHex(await sha256(token))
   const id = crypto.randomUUID()
   const now = Date.now()
   const ip = request ? clientIp(request) : ''
@@ -556,7 +571,7 @@ async function createSession(env, userId, request, device) {
     `INSERT INTO sessions (token, id, user_id, device, ip, ua, created_at, last_seen, expires_at)
      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`
   )
-    .bind(token, id, userId, clean(device, 80) || deviceFromUa(ua), ip, ua, now, now, now + SESSION_TTL)
+    .bind(stored, id, userId, clean(device, 80) || deviceFromUa(ua), ip, ua, now, now, now + SESSION_TTL)
     .run()
   return { token, expiresAt: now + SESSION_TTL }
 }
@@ -1161,12 +1176,25 @@ async function handlePublic(segments, request, env) {
     const salt = randomToken(16)
     const passHash = await hashPassword(password, salt)
     const status = settings.autoApprove ? 'active' : 'pending'
-    await env.DB.prepare(
-      `INSERT INTO users (id, username, pass_hash, salt, status, device, note, created_at, last_seen)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, '', ?7, ?8)`
-    )
-      .bind(id, username, passHash, salt, status, device, now, now)
-      .run()
+    try {
+      await env.DB.prepare(
+        `INSERT INTO users (id, username, pass_hash, salt, status, device, note, created_at, last_seen)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, '', ?7, ?8)`
+      )
+        .bind(id, username, passHash, salt, status, device, now, now)
+        .run()
+    } catch (error) {
+      // 并发注册会同时通过查重，唯一索引兜底后要把刚扣掉的邀请码还回去
+      if (/UNIQUE/i.test(String(error?.message || error))) {
+        if (invite) {
+          await env.DB.prepare('UPDATE invite_codes SET used_count = MAX(0, used_count - 1) WHERE id = ?1')
+            .bind(invite.id)
+            .run()
+        }
+        return fail('这个用户名已经注册了', 409)
+      }
+      throw error
+    }
     await audit(
       env,
       request,
@@ -1218,7 +1246,13 @@ async function handlePublic(segments, request, env) {
   if (segments[0] === 'logout' && method === 'POST') {
     const header = request.headers.get('authorization') || ''
     const token = header.replace(/^Bearer\s+/i, '').trim()
-    if (token) await env.DB.prepare('DELETE FROM sessions WHERE token = ?1').bind(token).run()
+    if (token) {
+      const hashed = bytesToHex(await sha256(token))
+      await env.DB.batch([
+        env.DB.prepare('DELETE FROM sessions WHERE token = ?1').bind(hashed),
+        env.DB.prepare('DELETE FROM sessions WHERE token = ?1').bind(token)
+      ])
+    }
     return json({ ok: true })
   }
 
@@ -1838,6 +1872,10 @@ async function handleAdmin(segments, request, env) {
       await env.DB.batch([
         env.DB.prepare('DELETE FROM sessions WHERE user_id = ?1').bind(id),
         env.DB.prepare('DELETE FROM user_data WHERE user_id = ?1').bind(id),
+        // 反馈保留给后台处理，但去掉与账号关联的身份信息
+        env.DB.prepare(
+          "UPDATE feedback SET user_id = '', username = '已注销用户', contact = '', ip = '' WHERE user_id = ?1"
+        ).bind(id),
         env.DB.prepare('DELETE FROM users WHERE id = ?1').bind(id)
       ])
       await audit(env, request, 'user.delete', row.username, '删除用户及其同步数据')
@@ -1997,6 +2035,6 @@ export async function onRequest(context) {
     return await handlePublic(segments, request, env)
   } catch (error) {
     console.error('kaytv-hub error', error)
-    return fail('服务器开小差了：' + String(error?.message || error).slice(0, 160), 500)
+    return fail('服务器开小差了，请稍后再试', 500)
   }
 }

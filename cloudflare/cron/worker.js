@@ -5,6 +5,48 @@
  */
 
 const MAX_ROUNDS = 12
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+async function safeEqual(left, right) {
+  const encoder = new TextEncoder()
+  const [a, b] = await Promise.all([
+    crypto.subtle.digest('SHA-256', encoder.encode(String(left))),
+    crypto.subtle.digest('SHA-256', encoder.encode(String(right)))
+  ])
+  const av = new Uint8Array(a)
+  const bv = new Uint8Array(b)
+  let diff = 0
+  for (let index = 0; index < av.length; index += 1) diff |= av[index] ^ bv[index]
+  return diff === 0
+}
+
+async function requestSweep(env, base, body) {
+  let lastError = null
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (attempt) await sleep(600 * attempt)
+    let response
+    try {
+      response = await fetch(`${base}/api/internal/health-sweep`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${env.CRON_TOKEN || ''}`,
+          'content-type': 'application/json'
+        },
+        body
+      })
+    } catch (error) {
+      lastError = error
+      continue
+    }
+    const text = await response.text()
+    if (response.ok) return text
+    const error = new Error(`体检接口返回 ${response.status}: ${text.slice(0, 160)}`)
+    // 429/5xx 是暂时性故障，重试；4xx 直接失败，重试也没用
+    if (response.status !== 429 && response.status < 500) throw error
+    lastError = error
+  }
+  throw lastError || new Error('体检接口请求失败')
+}
 
 async function sweep(env) {
   const base = String(env.HUB_URL || 'https://tv.9ky.us.ci').replace(/\/+$/, '')
@@ -14,16 +56,7 @@ async function sweep(env) {
   let remaining = 0
   let since = 0
   for (let round = 0; round < MAX_ROUNDS; round += 1) {
-    const response = await fetch(`${base}/api/internal/health-sweep`, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${env.CRON_TOKEN || ''}`,
-        'content-type': 'application/json'
-      },
-      body: JSON.stringify({ limit: 4, since })
-    })
-    const text = await response.text()
-    if (!response.ok) throw new Error(`体检接口返回 ${response.status}: ${text.slice(0, 160)}`)
+    const text = await requestSweep(env, base, JSON.stringify({ limit: 4, since }))
     let data = {}
     try {
       data = JSON.parse(text)
@@ -54,7 +87,10 @@ export default {
       return new Response('KayTV health sweep worker. POST /run with CRON_TOKEN to trigger.', { status: 200 })
     }
     const header = (request.headers.get('authorization') || '').replace(/^Bearer\s+/i, '').trim()
-    if (!env.CRON_TOKEN || header !== env.CRON_TOKEN) return new Response('unauthorized', { status: 401 })
+    const expected = String(env.CRON_TOKEN || '')
+    if (!expected || !header || !(await safeEqual(header, expected))) {
+      return new Response('unauthorized', { status: 401 })
+    }
     try {
       const result = await sweep(env)
       return Response.json({ ok: true, ...result })

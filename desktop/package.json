@@ -1,6 +1,6 @@
 {
   "name": "kaytv-desktop",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "private": true,
   "description": "KayTV Windows desktop shell",
   "main": "main.cjs",

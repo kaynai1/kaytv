@@ -45,6 +45,8 @@ const metaText = computed(() => {
   return `“${result.value.query}” 找到 ${result.value.items.length} 个结果 · ${seconds}s`
 })
 
+let searchToken = 0
+
 async function submit(value?: string) {
   const keyword = (value ?? query.value).trim()
   if (!keyword) {
@@ -53,20 +55,25 @@ async function submit(value?: string) {
   }
   query.value = keyword
   selectedSource.value = selectedSource.value || ''
+  const token = ++searchToken
   loading.value = true
   error.value = ''
   try {
-    result.value = await api.search(
+    const data = await api.search(
       keyword,
       selectedSource.value ? [selectedSource.value] : []
     )
+    if (token !== searchToken) return
+    result.value = data
     lastQuery.value = keyword
     library.addSearch(keyword)
   } catch (caught) {
+    if (token !== searchToken) return
     error.value = caught instanceof Error ? caught.message : '搜索失败'
     result.value = null
   } finally {
-    loading.value = false
+    // 换源或连按搜索时，旧请求收尾不能把新请求的加载状态关掉
+    if (token === searchToken) loading.value = false
   }
 }
 

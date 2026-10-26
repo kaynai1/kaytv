@@ -69,6 +69,7 @@ let saveMark = 0
 let pushedState = false
 let resumeAfterHide = false
 let lastFocused: HTMLElement | null = null
+let lastPlayKey = ''
 let gestureStart = { x: 0, y: 0, at: 0 }
 let longPressTimer = 0
 let longPressActive = false
@@ -1865,6 +1866,7 @@ watch(
     if (open) {
       resetRecovery()
       lastFocused = document.activeElement as HTMLElement | null
+      lastPlayKey = player.vod ? `${player.vod.detail.sourceId}:${player.vod.detail.id}` : ''
       document.body.style.overflow = 'hidden'
       if (!pushedState) {
         window.history.pushState({ ...(window.history.state || {}), kaytvPlayer: true }, '')
@@ -1908,9 +1910,29 @@ watch(
       }
       const target = lastFocused
       lastFocused = null
-      if (target && document.contains(target)) {
-        void nextTick(() => target.focus({ preventScroll: true }))
-      }
+      const fallbackKey = lastPlayKey
+      lastPlayKey = ''
+      void nextTick(() => {
+        if (target && document.contains(target)) {
+          target.focus({ preventScroll: true })
+          return
+        }
+        // 从详情弹窗起播时弹窗随后卸载，原焦点失效，退回刚看的那张海报卡
+        const cards = fallbackKey
+          ? Array.from(document.querySelectorAll<HTMLElement>('[data-play-key]')).filter(
+              (element) => element.dataset.playKey === fallbackKey
+            )
+          : []
+        // 同一个片子可能同时出现在横幅和海报墙里，优先回屏幕上看得见的那张
+        const card =
+          cards.find((element) => {
+            const rect = element.getBoundingClientRect()
+            return rect.bottom > 0 && rect.top < window.innerHeight
+          }) || cards[0]
+        if (!card) return
+        card.focus({ preventScroll: true })
+        card.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+      })
     }
   }
 )

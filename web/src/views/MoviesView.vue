@@ -182,7 +182,10 @@ function balanceShelf(list: VodItem[]): VodItem[] {
 }
 
 /** 拉一份全量片单，按识别到的类型分桶，用来补齐被拆成多个分类的短剧题材 */
+let extraToken = 0
+
 async function loadExtra(): Promise<Record<string, VodItem[]>> {
+  const token = ++extraToken
   try {
     const result = await api.feed('', 'all', sourceId.value, 1)
     const extras: Record<string, VodItem[]> = {}
@@ -191,21 +194,26 @@ async function loadExtra(): Promise<Record<string, VodItem[]>> {
       const bucket = extras[item.contentType] || (extras[item.contentType] = [])
       bucket.push(item)
     }
-    extraByType.value = extras
+    // 切分类时旧请求晚到，别把新分类的补充片单覆盖掉
+    if (token === extraToken) extraByType.value = extras
     return extras
   } catch {
     return {}
   }
 }
 
+let shelfToken = 0
+
 async function loadShelves() {
   if (!settings.online || settings.needsLogin) return
+  const token = ++shelfToken
   shelfLoading.value = true
   shelfError.value = ''
   /** 分类片单要一条一条冒出来，不能等 5 个分类的全部片源都跑完才第一次上屏 */
   const pools = new Map<string, { items: VodItem[]; errors: { sourceId: string; message: string }[] }>()
   let extras: Record<string, VodItem[]> = {}
   const render = () => {
+    if (token !== shelfToken) return 0
     const next: Shelf[] = []
     for (const shelf of SHELF_TYPES) {
       const pool = pools.get(shelf.id)
@@ -242,6 +250,7 @@ async function loadShelves() {
     })
   )
   extras = await extrasPromise
+  if (token !== shelfToken) return
   const shown = render()
 
   if (!shown) {
@@ -392,12 +401,21 @@ async function loadPage(next: number) {
       extraByType.value = {}
     }
   } catch (caught) {
+    if (token !== feedToken) return
+    // 首屏已经先到先上屏了，别用错误页把看得见的卡片盖掉
+    if (next === 1 && items.value.length) {
+      pageCount.value = next
+      return
+    }
     error.value = caught instanceof Error ? caught.message : '加载影视列表失败'
     if (next === 1) items.value = []
     pageCount.value = next
   } finally {
-    loading.value = false
-    loadingMore.value = false
+    // 旧请求收尾时别把新请求的加载状态一起关掉
+    if (token === feedToken) {
+      loading.value = false
+      loadingMore.value = false
+    }
   }
 }
 
