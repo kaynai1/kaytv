@@ -37,6 +37,7 @@ const posterUrl = computed(() => {
   return tmdbPosterUrl(tmdbArt.value, 'w780') || mediaUrl(detail.value?.pic || '')
 })
 const primaryBtn = ref<HTMLElement | null>(null)
+const panelEl = ref<HTMLElement | null>(null)
 
 const line = computed(() => detail.value?.lines[activeLine.value] || null)
 const isFavorite = computed(() =>
@@ -112,12 +113,16 @@ async function load() {
     if (entry && entry.lineIndex >= 0 && entry.lineIndex < result.lines.length) {
       activeLine.value = entry.lineIndex
     }
-    await nextTick()
-    primaryBtn.value?.focus({ preventScroll: false })
   } catch (caught) {
     error.value = caught instanceof Error ? caught.message : '加载详情失败'
   } finally {
     loading.value = false
+    // 详情区是 v-else-if，要等 loading 落下再取按钮，否则遥控器焦点还留在弹窗后面的卡片上
+    await nextTick()
+    const target =
+      primaryBtn.value ||
+      panelEl.value?.querySelector<HTMLElement>('.modal-error-actions [data-nav]')
+    target?.focus({ preventScroll: false })
   }
 }
 
@@ -157,8 +162,11 @@ function onKeydown(event: KeyboardEvent) {
 }
 
 let releaseBack: (() => void) | null = null
+let returnFocus: HTMLElement | null = null
 
 onMounted(() => {
+  const active = document.activeElement as HTMLElement | null
+  if (active && active !== document.body) returnFocus = active
   window.addEventListener('keydown', onKeydown, true)
   releaseBack = pushBack(() => {
     emit('close')
@@ -171,6 +179,9 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown, true)
   releaseBack?.()
   releaseBack = null
+  // 遥控器关掉弹窗后焦点要回到原来那张卡，不然下一次按键又从导航栏开始
+  returnFocus?.focus?.({ preventScroll: true })
+  returnFocus = null
 })
 
 watch(
@@ -181,8 +192,15 @@ watch(
 
 <template>
   <div class="modal-mask" @click.self="emit('close')">
-    <div class="modal-panel" role="dialog" aria-modal="true" :aria-label="detail?.name || '影片详情'">
-      <button class="modal-close" type="button" aria-label="关闭" @click="emit('close')">
+    <div
+      ref="panelEl"
+      class="modal-panel"
+      role="dialog"
+      aria-modal="true"
+      :aria-label="detail?.name || '影片详情'"
+      data-nav-scope
+    >
+      <button class="modal-close" type="button" aria-label="关闭" data-nav @click="emit('close')">
         <AppIcon name="close" :size="17" />
       </button>
 

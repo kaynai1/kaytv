@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { PosterItem } from '../types'
 import { mediaUrl } from '../api/runtime'
 import { tmdbArts, tmdbEnsure, tmdbKey, tmdbPosterUrl, tmdbSwapImageHost } from '../api/tmdb'
@@ -24,7 +24,35 @@ const key = computed(() => tmdbKey(props.item.name, props.item.year))
 const tmdbSrc = computed(() => (tmdbFailed.value ? '' : tmdbPosterUrl(tmdbArts[key.value], 'w500')))
 const src = computed(() => tmdbSrc.value || mediaUrl(props.item.pic))
 
-onMounted(() => tmdbEnsure(props.item.name, props.item.year, props.item.contentType || ''))
+const cardEl = ref<HTMLElement | null>(null)
+let artObserver: IntersectionObserver | null = null
+
+function ensureArt() {
+  tmdbEnsure(props.item.name, props.item.year, props.item.contentType || '')
+}
+
+onMounted(() => {
+  // 一屏上百张卡同时查 TMDB 会堵住首屏，滚到附近再查
+  if (typeof IntersectionObserver === 'undefined' || !cardEl.value) {
+    ensureArt()
+    return
+  }
+  artObserver = new IntersectionObserver(
+    (entries) => {
+      if (!entries.some((entry) => entry.isIntersecting)) return
+      artObserver?.disconnect()
+      artObserver = null
+      ensureArt()
+    },
+    { rootMargin: '600px 0px' }
+  )
+  artObserver.observe(cardEl.value)
+})
+
+onBeforeUnmount(() => {
+  artObserver?.disconnect()
+  artObserver = null
+})
 
 function onError() {
   if (!tmdbSrc.value) {
@@ -38,6 +66,7 @@ function onError() {
 
 <template>
   <button
+    ref="cardEl"
     class="poster-card"
     :class="{ compact: props.compact }"
     data-nav

@@ -10,6 +10,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
+import android.view.KeyEvent;
 import android.view.WindowManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
@@ -64,6 +65,38 @@ public class MainActivity extends BridgeActivity {
             return;
         }
         super.onBackPressed();
+    }
+
+    /** 电视遥控器的播放/暂停/上下曲键 WebView 默认收不到，先转给 H5 播放器 */
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+            String action = mediaAction(event.getKeyCode());
+            Bridge bridge = getBridge();
+            if (action != null && bridge != null) {
+                bridge.eval("window.dispatchEvent(new CustomEvent('kaytv:media',{detail:'" + action + "'}))", null);
+                return true;
+            }
+        }
+        return super.dispatchKeyEvent(event);
+    }
+
+    private String mediaAction(int keyCode) {
+        switch (keyCode) {
+            case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
+            case KeyEvent.KEYCODE_HEADSETHOOK:
+                return "play-pause";
+            case KeyEvent.KEYCODE_MEDIA_PLAY:
+                return "play";
+            case KeyEvent.KEYCODE_MEDIA_PAUSE:
+                return "pause";
+            case KeyEvent.KEYCODE_MEDIA_NEXT:
+                return "next";
+            case KeyEvent.KEYCODE_MEDIA_PREVIOUS:
+                return "previous";
+            default:
+                return null;
+        }
     }
 
     /** H5 直接控制常亮、系统音量、投屏面板与返回兜底，省掉外部插件 */

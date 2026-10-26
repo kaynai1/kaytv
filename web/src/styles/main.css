@@ -1474,14 +1474,51 @@ img {
   flex-shrink: 0;
 }
 
-/* TV 焦点：红色描边 + 放大（遥控器用 focus() 移动焦点，必须用 :focus） */
+/* TV 焦点：红色胶囊跟着遥控器走，不再给控件套一层方框 */
 .tv-mode [data-nav]:focus {
-  transform: scale(1.05);
   outline: 3px solid var(--accent);
   outline-offset: 3px;
-  border-radius: 12px;
   z-index: 40;
-  box-shadow: 0 12px 34px rgba(229, 9, 20, 0.55);
+  box-shadow: 0 12px 34px rgba(229, 9, 20, 0.45);
+}
+
+/* 筛选胶囊聚焦时本身就是红胶囊，遥控器指哪亮哪 */
+.tv-mode .chip:focus {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  outline: 3px solid #fff;
+  outline-offset: 2px;
+  box-shadow: 0 10px 26px rgba(229, 9, 20, 0.45);
+}
+
+.tv-mode .nav-link:focus {
+  background: var(--accent);
+  color: #fff;
+  outline: none;
+}
+
+/* 海报卡自带贴封面的红描边，别在整卡外面再套一层 */
+.tv-mode .poster-card:focus {
+  transform: scale(1.05);
+  outline: none;
+  box-shadow: none;
+  z-index: 40;
+}
+
+/* 电视盒子 GPU 弱：毛玻璃和大图高斯模糊每帧重算会卡到点不动 */
+.tv-mode .app-header,
+.tv-mode .player-overlay *,
+.tv-mode .modal-mask,
+.tv-mode .force-update {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+.tv-mode .hero .hero-ambient,
+.tv-mode .detail-glow {
+  filter: none !important;
+  opacity: 0.28;
 }
 
 /* 非 TV 模式下也用红色焦点，但更克制 */

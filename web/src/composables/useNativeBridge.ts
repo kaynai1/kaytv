@@ -37,7 +37,9 @@ export function initNativeBridge() {
   window.addEventListener('kaytv:back', () => {
     if (consumeBack()) return
     if (player.open) {
-      player.close()
+      // 播放器先处理：收起控制条/菜单，最后才真正退出；没人处理就直接关
+      const handled = !window.dispatchEvent(new CustomEvent('kaytv:player-back', { cancelable: true }))
+      if (!handled) player.close()
       return
     }
     const route = router.currentRoute.value

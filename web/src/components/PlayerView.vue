@@ -1625,8 +1625,29 @@ function wake() {
   // 手机暂停后控件也要收起，只留中间的大播放键；电脑/TV 暂停时保持原来的常驻控件
   if (!playing.value && !phoneGestures.value) return
   hideTimer = window.setTimeout(() => {
+    // 遥控器还停在控制条上时先别收，否则焦点会被一起藏掉
+    if (controlsFocused()) {
+      wake()
+      return
+    }
     controlsVisible.value = false
   }, 3800)
+}
+
+/** 焦点是否落在播放器内的按钮/列表上（视频画面本身不算） */
+function controlsFocused(): boolean {
+  const active = document.activeElement as HTMLElement | null
+  return !!active && active !== root.value && !!active.closest('.player-overlay')
+}
+
+/** 电视遥控器向下键进入控制条，先落在播放/暂停上 */
+function focusControls() {
+  controlsVisible.value = true
+  wake()
+  void nextTick(() => {
+    const first = root.value?.querySelector<HTMLElement>('.player-controls [data-nav]')
+    first?.focus({ preventScroll: true })
+  })
 }
 
 function goBack() {
@@ -1679,8 +1700,14 @@ function onKeydown(event: KeyboardEvent) {
       }
       return
     }
+    // 焦点已经在控制条/菜单上时交给空间导航，遥控器才能在按钮之间走
+    if (!drawerOpen.value && controlsFocused()) return
     event.preventDefault()
     event.stopPropagation()
+    if (event.key === 'ArrowDown' && settings.tvMode && !drawerOpen.value) {
+      focusControls()
+      return
+    }
     if (!drawerOpen.value) {
       openDrawer()
       return
@@ -1699,6 +1726,7 @@ function onKeydown(event: KeyboardEvent) {
       else drawerFocus(delta)
       return
     }
+    if (controlsFocused()) return
     event.preventDefault()
     event.stopPropagation()
     seekBy(delta * 15)
@@ -1732,7 +1760,52 @@ function onKeydown(event: KeyboardEvent) {
     if (typing) return
     event.preventDefault()
     toggleMute()
+    return
   }
+
+  if (event.key === 'MediaPlayPause' || event.key === 'MediaPlay' || event.key === 'MediaPause') {
+    event.preventDefault()
+    if (event.key === 'MediaPlay' && !playing.value) togglePlay()
+    else if (event.key === 'MediaPause' && playing.value) togglePlay()
+    else if (event.key === 'MediaPlayPause') togglePlay()
+  }
+}
+
+/** 遥控器上的播放/暂停/上下一曲由原生层转过来 */
+function onMediaKey(event: Event) {
+  if (!player.open) return
+  const action = (event as CustomEvent<string>).detail
+  if (action === 'play') {
+    if (!playing.value) togglePlay()
+    return
+  }
+  if (action === 'pause') {
+    if (playing.value) togglePlay()
+    return
+  }
+  if (action === 'play-pause') {
+    togglePlay()
+    return
+  }
+  if (action === 'next') {
+    if (isLive.value) switchChannel(1)
+    else if (canNext.value) nextEpisode()
+    return
+  }
+  if (action === 'previous' && isLive.value) switchChannel(-1)
+}
+
+/** 原生返回键：先收起控制条/面板，再退出播放，别一按就退出去 */
+function onPlayerBack(event: Event) {
+  if (!player.open) return
+  event.preventDefault()
+  if (!drawerOpen.value && !menu.value && controlsFocused()) {
+    const active = document.activeElement as HTMLElement | null
+    active?.blur()
+    controlsVisible.value = false
+    return
+  }
+  goBack()
 }
 
 function closePlayer() {
@@ -1872,6 +1945,8 @@ onMounted(() => {
   restoreSkip()
   restoreFill()
   window.addEventListener('kaytv:volume', onSystemVolume)
+  window.addEventListener('kaytv:media', onMediaKey)
+  window.addEventListener('kaytv:player-back', onPlayerBack)
   window.addEventListener('resize', onResize)
   window.addEventListener('popstate', onPopState)
   window.addEventListener('beforeunload', onBeforeUnload)
@@ -1881,6 +1956,8 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('kaytv:volume', onSystemVolume)
+  window.removeEventListener('kaytv:media', onMediaKey)
+  window.removeEventListener('kaytv:player-back', onPlayerBack)
   window.removeEventListener('resize', onResize)
   window.removeEventListener('popstate', onPopState)
   window.removeEventListener('beforeunload', onBeforeUnload)
@@ -1901,6 +1978,7 @@ onBeforeUnmount(() => {
       class="player-overlay"
       :class="{ 'controls-idle': !controlsVisible || drawerOpen, sheet: sheetMode }"
       tabindex="-1"
+      data-nav-scope
       @keydown.capture="onKeydown"
       @mousemove="onOverlayMove"
       @touchstart.passive="wake"
@@ -1995,7 +2073,7 @@ onBeforeUnmount(() => {
       />
 
       <div class="player-chrome player-top" :class="{ hidden: !controlsVisible || drawerOpen }">
-        <button class="player-btn round" type="button" aria-label="返回" @click="closePlayer">
+        <button class="player-btn round" type="button" aria-label="返回" data-nav @click="closePlayer">
           <AppIcon name="back" :size="22" />
         </button>
         <div class="player-heading">
@@ -2013,6 +2091,7 @@ onBeforeUnmount(() => {
             class="player-btn round sheet-hide"
             type="button"
             aria-label="小窗播放"
+            data-nav
             @click="togglePip"
           >
             <AppIcon name="pip" :size="20" />
@@ -2022,6 +2101,7 @@ onBeforeUnmount(() => {
             class="player-btn round"
             type="button"
             aria-label="投屏"
+            data-nav
             @click="openCast"
           >
             <AppIcon name="cast" :size="20" />
@@ -2032,26 +2112,27 @@ onBeforeUnmount(() => {
               type="button"
               :class="{ active: menu === 'more' }"
               aria-label="更多设置"
+              data-nav
               @click="toggleMenu('more')"
             >
               <AppIcon name="more" :size="20" />
             </button>
             <div v-if="menu === 'more'" class="player-menu">
-              <button class="menu-item" type="button" @click="toggleFill">
+              <button class="menu-item" type="button" data-nav @click="toggleFill">
                 画面填充<span class="menu-value">{{ fillMode === 'cover' ? '铺满' : '适应' }}</span>
               </button>
-              <button class="menu-item" type="button" @click="closeMenu(); retryPlayback()">
+              <button class="menu-item" type="button" data-nav @click="closeMenu(); retryPlayback()">
                 重新载入线路<span class="menu-value">重试</span>
               </button>
-              <button v-if="!isLive" class="menu-item" type="button" @click="closeMenu(); void switchSourceNow()">
+              <button v-if="!isLive" class="menu-item" type="button" data-nav @click="closeMenu(); void switchSourceNow()">
                 换个片源试试<span class="menu-value">自动</span>
               </button>
-              <button class="menu-item" type="button" @click="void copyPlaybackUrl()">
+              <button class="menu-item" type="button" data-nav @click="void copyPlaybackUrl()">
                 复制播放地址<span class="menu-value">调试</span>
               </button>
             </div>
           </div>
-          <button class="player-btn round sheet-hide" type="button" aria-label="关闭" @click="closePlayer">
+          <button class="player-btn round sheet-hide" type="button" aria-label="关闭" data-nav @click="closePlayer">
             <AppIcon name="close" :size="22" />
           </button>
         </div>
@@ -2083,7 +2164,7 @@ onBeforeUnmount(() => {
 
         <div class="player-controls">
           <div class="controls-left">
-            <button class="player-btn round" type="button" :aria-label="playing ? '暂停' : '播放'" @click="togglePlay">
+            <button class="player-btn round" type="button" :aria-label="playing ? '暂停' : '播放'" data-nav @click="togglePlay">
               <AppIcon :name="playing ? 'pause' : 'play'" :size="22" />
             </button>
             <template v-if="!isLive">
@@ -2091,6 +2172,7 @@ onBeforeUnmount(() => {
                 class="player-btn round small"
                 type="button"
                 aria-label="后退 15 秒"
+                data-nav
                 @click="seekBy(-15)"
               >
                 <span class="seek-label">-15</span>
@@ -2099,6 +2181,7 @@ onBeforeUnmount(() => {
                 class="player-btn round small"
                 type="button"
                 aria-label="前进 15 秒"
+                data-nav
                 @click="seekBy(15)"
               >
                 <span class="seek-label">+15</span>
@@ -2109,6 +2192,7 @@ onBeforeUnmount(() => {
                 class="player-btn round small"
                 type="button"
                 aria-label="上一个频道"
+                data-nav
                 @click="switchChannel(-1)"
               >
                 <AppIcon name="back" :size="18" />
@@ -2117,6 +2201,7 @@ onBeforeUnmount(() => {
                 class="player-btn round small"
                 type="button"
                 aria-label="下一个频道"
+                data-nav
                 @click="switchChannel(1)"
               >
                 <AppIcon name="right" :size="18" />
@@ -2127,6 +2212,7 @@ onBeforeUnmount(() => {
                 class="player-btn round small"
                 type="button"
                 :aria-label="muted || volume === 0 ? '取消静音' : '静音'"
+                data-nav
                 @click="toggleMute"
               >
                 <AppIcon :name="volumeIcon" :size="18" />
@@ -2135,6 +2221,7 @@ onBeforeUnmount(() => {
                 class="player-btn round tiny sheet-hide"
                 type="button"
                 aria-label="音量减小"
+                data-nav
                 @click="stepVolume(-0.1)"
               >
                 <AppIcon name="minus" :size="13" />
@@ -2156,6 +2243,7 @@ onBeforeUnmount(() => {
                 class="player-btn round tiny sheet-hide"
                 type="button"
                 aria-label="音量增大"
+                data-nav
                 @click="stepVolume(0.1)"
               >
                 <AppIcon name="plus" :size="13" />
@@ -2170,6 +2258,7 @@ onBeforeUnmount(() => {
                 class="player-btn pill"
                 type="button"
                 :class="{ active: menu === 'rate' || rate !== 1 }"
+                data-nav
                 @click="toggleMenu('rate')"
               >
                 <AppIcon name="gauge" :size="16" />
@@ -2182,6 +2271,7 @@ onBeforeUnmount(() => {
                   class="menu-item"
                   :class="{ active: item === rate }"
                   type="button"
+                  data-nav
                   @click="setRate(item)"
                 >
                   {{ item === 1 ? '常速' : `${item}x` }}
@@ -2193,6 +2283,7 @@ onBeforeUnmount(() => {
                 class="player-btn pill"
                 type="button"
                 :class="{ active: menu === 'skip' || skipIntro > 0 || skipOutro > 0 }"
+                data-nav
                 @click="toggleMenu('skip')"
               >
                 片头/尾
@@ -2206,6 +2297,7 @@ onBeforeUnmount(() => {
                     class="chip"
                     :class="{ active: seconds === skipIntro }"
                     type="button"
+                    data-nav
                     @click="setSkip('intro', seconds)"
                   >
                     {{ seconds ? `${seconds} 秒` : '不跳' }}
@@ -2219,6 +2311,7 @@ onBeforeUnmount(() => {
                     class="chip"
                     :class="{ active: seconds === skipOutro }"
                     type="button"
+                    data-nav
                     @click="setSkip('outro', seconds)"
                   >
                     {{ seconds ? `${seconds} 秒` : '不跳' }}
@@ -2226,19 +2319,19 @@ onBeforeUnmount(() => {
                 </div>
               </div>
             </div>
-            <button class="player-btn pill sheet-hide" type="button" @click="toggleDrawer('sources')">
+            <button class="player-btn pill sheet-hide" type="button" data-nav @click="toggleDrawer('sources')">
               <AppIcon name="server" :size="16" />
               播放源
             </button>
-            <button class="player-btn pill sheet-hide" type="button" @click="toggleDrawer('list')">
+            <button class="player-btn pill sheet-hide" type="button" data-nav @click="toggleDrawer('list')">
               <AppIcon :name="isLive ? 'tv' : 'film'" :size="16" />
               {{ isLive ? '频道' : '选集' }}
             </button>
-            <button v-if="canNext" class="player-btn pill sheet-hide" type="button" @click="nextEpisode">
+            <button v-if="canNext" class="player-btn pill sheet-hide" type="button" data-nav @click="nextEpisode">
               <AppIcon name="right" :size="16" />
               下一集
             </button>
-            <button v-if="!isLive" class="player-btn pill sheet-hide" type="button" @click="toggleDrawer('info')">
+            <button v-if="!isLive" class="player-btn pill sheet-hide" type="button" data-nav @click="toggleDrawer('info')">
               <AppIcon name="info" :size="16" />
               详情
             </button>
@@ -2247,6 +2340,7 @@ onBeforeUnmount(() => {
               class="player-btn round"
               type="button"
               :aria-label="isFullscreen ? '退出全屏' : '全屏'"
+              data-nav
               @click="toggleFullscreen"
             >
               <AppIcon :name="isFullscreen ? 'fullscreenExit' : 'fullscreen'" :size="20" />
@@ -2256,7 +2350,8 @@ onBeforeUnmount(() => {
 
         <p v-if="!runtime.native || settings.tvMode" class="player-hint">
           <span>← → {{ isLive ? '切换频道' : '快退/快进 15 秒' }}</span>
-          <span>↑ 打开{{ isLive ? '频道' : '选集' }}列表</span>
+          <span>↓ 播放/音量按钮</span>
+          <span>↑ {{ isLive ? '频道列表' : '选集列表' }}</span>
           <span>Enter 播放/暂停</span>
           <span>Esc 退出</span>
         </p>

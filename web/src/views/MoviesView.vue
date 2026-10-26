@@ -47,6 +47,7 @@ const heroInfo = ref<VodDetail | null>(null)
 const heroFading = ref(false)
 const detailCache = new Map<string, VodDetail>()
 let heroTimer = 0
+let secondaryTimer = 0
 
 const CONTENT_TABS = [
   { id: '', name: '推荐' },
@@ -343,8 +344,11 @@ const heroFavorited = computed(() => {
   return library.isFavorite(item.sourceId, item.id)
 })
 
+let feedToken = 0
+
 async function loadPage(next: number) {
   if (!settings.online || settings.needsLogin) return
+  const token = next === 1 ? ++feedToken : feedToken
   if (next === 1) {
     loading.value = true
     error.value = ''
@@ -357,8 +361,18 @@ async function loadPage(next: number) {
       content.value,
       content.value ? region.value : 'all',
       sourceId.value,
-      next
+      next,
+      next === 1
+        ? (partial) => {
+            // 先到先上屏：不等最慢的片源，首屏能早几秒看到海报
+            if (token !== feedToken || !partial.items.length) return
+            items.value = partial.items
+            loading.value = false
+            error.value = ''
+          }
+        : undefined
     )
+    if (token !== feedToken) return
     if (next === 1) {
       items.value = result.items
     } else {
@@ -586,8 +600,12 @@ onMounted(async () => {
   if (sentinel.value) observer.observe(sentinel.value)
   pickSource()
   if (!settings.needsLogin) reload()
-  void loadTaxonomy()
-  if (content.value === '') void loadShelves()
+  // 首屏先让主片单抢带宽，分类索引和货架晚一点再补，三端冷启动不再同时打几十个请求
+  secondaryTimer = window.setTimeout(() => {
+    if (!mounted.value) return
+    void loadTaxonomy()
+    if (content.value === '') void loadShelves()
+  }, 1500)
   startHeroTimer()
   window.addEventListener('resize', updateScrollState)
   if (typeof ResizeObserver !== 'undefined' && sourceRow.value) {
@@ -598,6 +616,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  window.clearTimeout(secondaryTimer)
   observer?.disconnect()
   rowObserver?.disconnect()
   window.removeEventListener('resize', updateScrollState)
@@ -660,7 +679,7 @@ watch(
 
 watch(heroItems, (list) => {
   heroFailures = 0
-  for (const item of list) tmdbEnsure(item.name, item.year, item.contentType || '')
+  for (const item of list.slice(0, 6)) tmdbEnsure(item.name, item.year, item.contentType || '')
   if (!list.length) return
   if (heroIndex.value > list.length - 1) heroIndex.value = 0
 })

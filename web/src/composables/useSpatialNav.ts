@@ -2,17 +2,31 @@ import { onBeforeUnmount, onMounted } from 'vue'
 
 type Direction = 'ArrowUp' | 'ArrowDown' | 'ArrowLeft' | 'ArrowRight'
 
-function isVisible(element: HTMLElement): boolean {
-  if (element.hasAttribute('disabled') || element.getAttribute('aria-disabled') === 'true') return false
-  if (element.tabIndex < 0) return false
+function rendered(element: HTMLElement): boolean {
   const rect = element.getBoundingClientRect()
   if (rect.width <= 0 || rect.height <= 0) return false
   const style = window.getComputedStyle(element)
-  return style.visibility !== 'hidden' && style.display !== 'none'
+  return style.visibility !== 'hidden' && style.display !== 'none' && style.pointerEvents !== 'none'
 }
 
-export function collectNavItems(scope: ParentNode = document): HTMLElement[] {
-  return Array.from(scope.querySelectorAll<HTMLElement>('[data-nav]')).filter(isVisible)
+function isVisible(element: HTMLElement): boolean {
+  if (element.hasAttribute('disabled') || element.getAttribute('aria-disabled') === 'true') return false
+  if (element.tabIndex < 0) return false
+  return rendered(element)
+}
+
+export function collectNavItems(scope?: ParentNode): HTMLElement[] {
+  const root = scope || activeScope()
+  return Array.from(root.querySelectorAll<HTMLElement>('[data-nav]')).filter(isVisible)
+}
+
+/** 播放器/弹窗打开时只在这一层里走，别把焦点跑到后面的海报墙上 */
+function activeScope(): ParentNode {
+  const scopes = Array.from(document.querySelectorAll<HTMLElement>('[data-nav-scope]'))
+  for (let index = scopes.length - 1; index >= 0; index -= 1) {
+    if (rendered(scopes[index])) return scopes[index]
+  }
+  return document
 }
 
 function centerOf(element: HTMLElement) {
@@ -26,6 +40,7 @@ function moveFocus(direction: Direction) {
   const active = document.activeElement as HTMLElement | null
   if (!active || !items.includes(active)) {
     items[0].focus({ preventScroll: true })
+    // 电视遥控器连续按方向键时，平滑滚动会越滚越慢，直接瞬时对齐
     items[0].scrollIntoView({ block: 'nearest', inline: 'nearest' })
     return
   }
@@ -51,7 +66,7 @@ function moveFocus(direction: Direction) {
   }
   if (best) {
     best.focus({ preventScroll: true })
-    best.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' })
+    best.scrollIntoView({ block: 'nearest', inline: 'nearest' })
   }
 }
 
@@ -61,8 +76,11 @@ export function focusFirstNav(scope: ParentNode = document) {
 }
 
 export function useSpatialNav() {
+  let lastMove = 0
   const onKeyDown = (event: KeyboardEvent) => {
     if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return
+    // 长按遥控器方向键会连发几十次，每次都要量全部卡片位置，限到每秒七次
+    if (event.repeat && Date.now() - lastMove < 140) return
     const target = event.target as HTMLElement | null
     if (target) {
       const tag = target.tagName
@@ -75,6 +93,7 @@ export function useSpatialNav() {
       event.key === 'ArrowRight'
     ) {
       event.preventDefault()
+      lastMove = Date.now()
       moveFocus(event.key)
     }
   }

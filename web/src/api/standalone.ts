@@ -186,6 +186,8 @@ function remember<T>(key: string, value: T, ttl: number) {
   if (persistable(key)) diskPut(key, { value, expires, storedAt: Date.now() })
 }
 
+const pending = new Map<string, Promise<unknown>>()
+
 async function cached<T>(key: string, ttl: number, producer: () => Promise<T>): Promise<T> {
   const now = Date.now()
   let hit = cache.get(key)
@@ -201,9 +203,20 @@ async function cached<T>(key: string, ttl: number, producer: () => Promise<T>): 
     void revalidate(key, ttl, producer)
     return hit.value as T
   }
-  const value = await producer()
-  remember(key, value, ttl)
-  return value
+  // 首屏、分类和货架会同时来要同一份数据，别把同一请求发好几遍
+  const running = pending.get(key)
+  if (running) return running as Promise<T>
+  const job = (async () => {
+    try {
+      const value = await producer()
+      remember(key, value, ttl)
+      return value
+    } finally {
+      pending.delete(key)
+    }
+  })()
+  pending.set(key, job)
+  return job
 }
 
 function loadFailures(): Map<string, number> {
@@ -514,6 +527,14 @@ const KANJU_CATEGORIES: Category[] = [
 let kanjuKey: Promise<CryptoKey> | null = null
 let kanjuProxyBase = ''
 
+/** 同一个后端的镜像站，主域名不通时自动换过去，不额外占一条片源 */
+const KANJU_MIRRORS = ['https://zhaoju4.com']
+
+function kanjuHosts(source: LocalSource): string[] {
+  const hosts = [source.api, ...KANJU_MIRRORS]
+  return hosts.filter((host, index) => !!host && hosts.indexOf(host) === index)
+}
+
 /** 云后台启用看剧AI 代签后，客户端走云端代理，密钥不再依赖构建期注入 */
 export function setKanjuProxy(base: string) {
   kanjuProxyBase = String(base || '').replace(/\/+$/, '')
@@ -573,11 +594,12 @@ async function kanjuAttempt(
   timeout: number,
   method: string,
   body: unknown,
-  mode: 'proxy' | 'direct'
+  mode: 'proxy' | 'direct',
+  base?: string
 ): Promise<KanjuAttempt> {
   let href: string
   try {
-    href = mode === 'proxy' ? kanjuProxyUrl(path) : new URL(path, source.api).href
+    href = mode === 'proxy' ? kanjuProxyUrl(path) : new URL(path, base || source.api).href
   } catch {
     return { error: '接口地址无效' }
   }
@@ -605,7 +627,10 @@ async function kanjuAttempt(
       } catch {
         /* non-JSON error body */
       }
-      return { error: detail || `HTTP ${response.status}`, retryable: mode === 'proxy' }
+      return {
+        error: detail || `HTTP ${response.status}`,
+        retryable: mode === 'proxy' || response.status >= 500 || response.status === 429
+      }
     }
     try {
       return { payload: JSON.parse(text) as Record<string, unknown> }
@@ -615,7 +640,7 @@ async function kanjuAttempt(
   } catch {
     return {
       error: controller.signal.aborted ? '请求超时' : '无法访问接口',
-      retryable: mode === 'proxy'
+      retryable: true
     }
   } finally {
     window.clearTimeout(timer)
@@ -636,20 +661,37 @@ async function kanjuJson(
   if (!modes.length) throw new Error(`${source.name}: 云端未启用看剧AI 代签，本机构建也没有内置密钥`)
   let lastError = '无法访问接口'
   for (const mode of modes) {
-    const attempt = await kanjuAttempt(
-      source,
-      path,
-      mode === 'proxy' ? Math.min(timeout, 9000) : timeout,
-      method,
-      options.body,
-      mode
-    )
-    if (attempt.payload) {
-      rememberHealth(source.id, true, Date.now() - started)
-      return attempt.payload
+    if (mode === 'proxy') {
+      const attempt = await kanjuAttempt(source, path, Math.min(timeout, 9000), method, options.body, 'proxy')
+      if (attempt.payload) {
+        rememberHealth(source.id, true, Date.now() - started)
+        return attempt.payload
+      }
+      lastError = attempt.error || lastError
+      continue
     }
-    lastError = attempt.error || lastError
-    if (!attempt.retryable) break
+    let blocked = false
+    for (const host of kanjuHosts(source)) {
+      const attempt = await kanjuAttempt(
+        source,
+        path,
+        host === source.api ? timeout : Math.min(timeout, 8000),
+        method,
+        options.body,
+        'direct',
+        host
+      )
+      if (attempt.payload) {
+        rememberHealth(source.id, true, Date.now() - started)
+        return attempt.payload
+      }
+      lastError = attempt.error || lastError
+      if (!attempt.retryable) {
+        blocked = true
+        break
+      }
+    }
+    if (blocked) break
   }
   markFailed(source.id, lastError)
   rememberHealth(source.id, false, Date.now() - started)
@@ -1049,9 +1091,9 @@ async function getCategories(source: LocalSource): Promise<Category[]> {
   return cached(`cat:${source.id}`, CATEGORY_TTL, async () => {
     let payload: Record<string, unknown>
     try {
-      payload = await requestJson(source, { ac: 'list' }, 6000)
+      payload = await requestJson(source, { ac: 'list' }, 4500)
     } catch {
-      payload = await requestJson(source, { ac: 'detail', pg: 1 }, 6000)
+      payload = await requestJson(source, { ac: 'detail', pg: 1 }, 4500)
     }
     const classes = Array.isArray(payload?.class) ? (payload.class as Record<string, unknown>[]) : []
     return classes
@@ -1125,13 +1167,13 @@ async function getList(
   const result = await cached<VodListResult>(key, LIST_TTL, async () => {
     let payload: Record<string, unknown>
     try {
-      payload = await requestJson(source, { ac: 'detail', pg: safePage, t: type }, 6000)
+      payload = await requestJson(source, { ac: 'detail', pg: safePage, t: type }, 4500)
       const first = normalizeList(payload, source)
       if (first.items.length || Number(payload?.code) === 1) return first
     } catch {
       /* try legacy endpoint below */
     }
-    payload = await requestJson(source, { ac: 'videolist', pg: safePage, t: type }, 6000)
+    payload = await requestJson(source, { ac: 'videolist', pg: safePage, t: type }, 4500)
     return normalizeList(payload, source)
   })
   if (!result.items.length) cache.delete(key)
@@ -1145,7 +1187,7 @@ interface IndexEntry {
 }
 
 async function buildIndex(sources: LocalSource[]): Promise<IndexEntry[]> {
-  return mapLimit(sources, 8, async (source): Promise<IndexEntry> => {
+  return mapLimit(sources, 12, async (source): Promise<IndexEntry> => {
     try {
       const categories = await getCategories(source)
       return {
@@ -1169,7 +1211,8 @@ export async function feed(
   content = '',
   region = 'all',
   sourceId = '',
-  page = 1
+  page = 1,
+  onPartial?: (result: FeedResult) => void
 ): Promise<FeedResult> {
   const safePage = Math.max(1, Math.min(Number(page) || 1, MAX_PAGE))
   const picked = builtinSources().filter((item) => !sourceId || item.id === sourceId)
@@ -1236,19 +1279,52 @@ export async function feed(
       return { items: [], page: safePage, pageCount: 1, total: 0, sources: 0, errors: categoryErrors }
     }
 
-    const results = await mapLimit(jobs, 8, async (job) => {
+    type SourceOutcome = {
+      sourceId: string
+      items: VodItem[]
+      content: string
+      pageCount: number
+      error: string | null
+    }
+    const landed: SourceOutcome[] = []
+    let emitted = 0
+    let lastEmit = 0
+    // 谁先回来先上屏，不用等最慢的源；首屏能早几秒看到海报
+    const emitPartial = () => {
+      if (!onPartial || safePage !== 1) return
+      const now = Date.now()
+      const ready = landed.filter((item) => item.items.length)
+      if (!ready.length) return
+      const partial = mergeFeed(ready)
+      if (!partial.length || partial.length === emitted) return
+      if (emitted && now - lastEmit < 400) return
+      emitted = partial.length
+      lastEmit = now
+      onPartial({
+        items: partial,
+        page: safePage,
+        pageCount: 1,
+        total: partial.length,
+        sources: ready.length,
+        errors: []
+      })
+    }
+    const results = await mapLimit(jobs, 12, async (job) => {
       try {
         const result = await getList(job.source, safePage, job.type, job.area)
         const items = job.area
           ? result.items.filter((item) => matchRegion(item.area, job.area))
           : result.items
-        return {
+        const outcome: SourceOutcome = {
           sourceId: job.source.id,
           items,
           content: job.content,
           pageCount: job.area ? safePage + 1 : Math.max(1, result.pageCount || 1),
-          error: null as string | null
+          error: null
         }
+        landed.push(outcome)
+        emitPartial()
+        return outcome
       } catch (error) {
         return {
           sourceId: job.source.id,
@@ -1495,16 +1571,32 @@ export async function probeVodSource(id: string): Promise<SourceProbe> {
       }
       let detail = '无法访问'
       for (const mode of modes) {
-        const attempt = await kanjuAttempt(source, path, mode === 'proxy' ? 9000 : 12000, 'GET', undefined, mode)
-        if (!attempt.payload) {
+        if (mode === 'proxy') {
+          const attempt = await kanjuAttempt(source, path, 9000, 'GET', undefined, 'proxy')
+          if (attempt.payload) {
+            const cards = Array.isArray(attempt.payload.cards) ? attempt.payload.cards.length : 0
+            return {
+              ok: true,
+              ms: Math.round(performance.now() - started),
+              detail: `云端代签正常${cards ? ' · 含官方高清/4K 线路' : ''}`
+            }
+          }
           detail = attempt.error || detail
           continue
         }
-        const cards = Array.isArray(attempt.payload.cards) ? attempt.payload.cards.length : 0
-        return {
-          ok: true,
-          ms: Math.round(performance.now() - started),
-          detail: `云端代签正常${cards ? ' · 含官方高清/4K 线路' : ''}`
+        for (const host of kanjuHosts(source)) {
+          const attempt = await kanjuAttempt(source, path, 10000, 'GET', undefined, 'direct', host)
+          if (!attempt.payload) {
+            detail = attempt.error || detail
+            if (!attempt.retryable) break
+            continue
+          }
+          const cards = Array.isArray(attempt.payload.cards) ? attempt.payload.cards.length : 0
+          return {
+            ok: true,
+            ms: Math.round(performance.now() - started),
+            detail: `${host === source.api ? '' : '镜像'}直连正常${cards ? ' · 含官方高清/4K 线路' : ''}`
+          }
         }
       }
       return {

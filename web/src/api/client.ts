@@ -132,8 +132,14 @@ export const api = {
       timeout: 25000
     })
   },
-  feed(content: string, region: string, source = '', page = 1) {
-    if (runtime.standalone) return local.feed(content, region, source, page)
+  feed(
+    content: string,
+    region: string,
+    source = '',
+    page = 1,
+    onPartial?: (result: FeedResult) => void
+  ) {
+    if (runtime.standalone) return local.feed(content, region, source, page, onPartial)
     return request<FeedResult>('/api/vod/feed', {
       params: { content, region, source, page },
       timeout: 60000
