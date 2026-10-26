@@ -14,6 +14,11 @@ export interface ImportResult {
   label: string
   live: ImportCandidate[]
   vod: ImportCandidate[]
+  skipped: number
+}
+
+interface ImportStats {
+  skipped: number
 }
 
 const FETCH_TIMEOUT = 14000
@@ -25,10 +30,26 @@ const MAX_DEPTH = 2
 
 const LIVE_PATH_RE = /\.(?:m3u8?|txt)(?:[?#]|$)|(?:^|\/)(?:live|tv)\/?(?:[?#]|$)/i
 const PLAYLIST_SUFFIX_RE = /\.(m3u8?|txt)(?:[?#]|$)/i
+const PLUGIN_PATH_RE = /\.(?:js|js\.md5|md5)$/i
+const MD5_ONLY_RE = /^[a-f0-9]{32}$/i
+const PLUGIN_BODY_RE = /module\.exports|globalThis\.__filename|js2p:\/\//i
+
+const PLUGIN_HINT = '这是 XPTV/TVBox 的 JS 插件（或它的 .md5 版本文件），需要专用运行环境，KayTV 无法直接加载；请改填它的 TVBox 配置 JSON、m3u/txt 直播列表或苹果CMS 采集接口'
 
 function looksLikePlaylistText(text: string): boolean {
   const head = text.slice(0, 2000)
   return /#EXTM3U|#EXTINF|#genre#/i.test(head)
+}
+
+function isPluginUrl(raw: string): boolean {
+  if (/^js2p:/i.test(raw)) return true
+  let pathname = raw
+  try {
+    pathname = new URL(raw).pathname
+  } catch {
+    /* 原样匹配 */
+  }
+  return PLUGIN_PATH_RE.test(pathname)
 }
 
 function githubMirror(url: string): string {
@@ -68,29 +89,76 @@ async function fetchText(url: string, timeout = FETCH_TIMEOUT): Promise<string> 
 }
 
 function parseTolerantJson(text: string): Record<string, unknown> | null {
-  let body = text.replace(/^\uFEFF/, '').trim()
+  const body = text.replace(/^\uFEFF/, '').trim()
   const start = body.indexOf('{')
   const end = body.lastIndexOf('}')
   if (start >= 0 && end > start) {
-    body = body.slice(start, end + 1)
-    try {
-      return JSON.parse(body) as Record<string, unknown>
-    } catch {
-      /* continue */
-    }
-    const cleaned = body.replace(/\/\*[\s\S]*?\*\//g, '').replace(/,(\s*[}\]])/g, '$1')
-    try {
-      return JSON.parse(cleaned) as Record<string, unknown>
-    } catch {
-      /* continue */
-    }
-    try {
-      return JSON.parse(stripCommentsOutsideStrings(cleaned)) as Record<string, unknown>
-    } catch {
-      /* fall through */
-    }
+    const parsed = tryParseObject(body.slice(start, end + 1))
+    if (parsed) return parsed
   }
   return parseJsonAtBraces(text) || parseBase64Json(text)
+}
+
+function tryParseObject(text: string): Record<string, unknown> | null {
+  const noComments = stripCommentsOutsideStrings(text)
+  const variants = [
+    text,
+    text.replace(/,(\s*[}\]])/g, '$1'),
+    noComments,
+    noComments.replace(/,(\s*[}\]])/g, '$1'),
+    escapeControlCharsInStrings(text),
+    escapeControlCharsInStrings(noComments),
+    escapeControlCharsInStrings(noComments).replace(/,(\s*[}\]])/g, '$1')
+  ]
+  for (const variant of variants) {
+    try {
+      const parsed = JSON.parse(variant) as unknown
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, unknown>
+    } catch {
+      /* 下一个写法 */
+    }
+  }
+  return null
+}
+
+/** TVBox 配置里常见字符串内直接换行，严格 JSON 会报控制字符 */
+function escapeControlCharsInStrings(text: string): string {
+  let out = ''
+  let inString = false
+  let inEscape = false
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index]
+    if (!inString) {
+      if (char === '"') inString = true
+      out += char
+      continue
+    }
+    if (inEscape) {
+      out += char
+      inEscape = false
+      continue
+    }
+    if (char === '\\') {
+      out += char
+      inEscape = true
+      continue
+    }
+    if (char === '"') {
+      inString = false
+      out += char
+      continue
+    }
+    const code = char.charCodeAt(0)
+    if (code < 0x20) {
+      if (char === '\n') out += '\\n'
+      else if (char === '\r') out += '\\r'
+      else if (char === '\t') out += '\\t'
+      else out += ' '
+      continue
+    }
+    out += char
+  }
+  return out
 }
 
 function stripCommentsOutsideStrings(text: string): string {
@@ -131,15 +199,8 @@ function parseJsonAtBraces(text: string): Record<string, unknown> | null {
   for (let attempt = 0; attempt < 8; attempt++) {
     const start = text.indexOf('{', from)
     if (start < 0) return null
-    const candidate = text.slice(start)
-    for (const variant of [candidate, candidate.replace(/,(\s*[}\]])/g, '$1'), stripCommentsOutsideStrings(candidate)]) {
-      try {
-        const parsed = JSON.parse(variant) as unknown
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, unknown>
-      } catch {
-        /* next variant */
-      }
-    }
+    const parsed = tryParseObject(text.slice(start))
+    if (parsed) return parsed
     from = start + 1
   }
   return null
@@ -164,19 +225,10 @@ function parseBase64Json(text: string): Record<string, unknown> | null {
     const compact = match.replace(/[\r\n]/g, '')
     const decoded = decodeBase64ToText(compact)
     if (!decoded.includes('{')) continue
-    const parsed = parseJsonAtBraces(decoded) || tryPlainJson(decoded)
+    const parsed = parseJsonAtBraces(decoded) || tryParseObject(decoded)
     if (parsed) return parsed
   }
   return null
-}
-
-function tryPlainJson(text: string): Record<string, unknown> | null {
-  try {
-    const parsed = JSON.parse(text) as unknown
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null
-  } catch {
-    return null
-  }
 }
 
 function looksLikePlaylist(raw: string): boolean {
@@ -255,7 +307,8 @@ function collectFromConfig(
   base: string,
   label: string,
   live: ImportCandidate[],
-  vod: ImportCandidate[]
+  vod: ImportCandidate[],
+  stats: ImportStats
 ): void {
   for (const item of readArray(config.lives)) {
     const name = str(item.name)
@@ -271,7 +324,10 @@ function collectFromConfig(
     }
   }
   for (const item of readArray(config.sites)) {
-    if (Number(item.type) !== 1) continue
+    if (Number(item.type) !== 1) {
+      if (str(item.api) || str(item.name)) stats.skipped++
+      continue
+    }
     takeVod(vod, str(item.name), str(item.api), base, label)
   }
 }
@@ -282,6 +338,7 @@ async function expandChild(
   baseForResolve: string,
   live: ImportCandidate[],
   vod: ImportCandidate[],
+  stats: ImportStats,
   depth: number
 ): Promise<void> {
   let url = ''
@@ -298,73 +355,77 @@ async function expandChild(
   } catch {
     return
   }
-  const playlistMatch = PLAYLIST_SUFFIX_RE.exec(url.split('?')[0])
-  if (playlistMatch) {
-    if (looksLikePlaylistText(text)) takeLive(live, label, url, url, `来自 ${label}`)
+  if (looksLikePlaylistText(text)) {
+    takeLive(live, label, url, url, `来自 ${label}`)
     return
   }
   const json = parseTolerantJson(text)
-  if (!json) {
-    if (looksLikePlaylistText(text)) takeLive(live, label, url, url, `来自 ${label}`)
-    return
-  }
+  if (!json) return
   if (depth < MAX_DEPTH && Array.isArray(json.urls) && json.urls.length && !json.lives && !json.sites) {
     const children = readArray(json.urls).slice(0, MAX_CHILD_CONFIGS)
     await Promise.all(
-      children.map((child) => expandChild(str(child.url), str(child.name), url, live, vod, depth + 1))
+      children.map((child) => expandChild(str(child.url), str(child.name), url, live, vod, stats, depth + 1))
     )
     return
   }
-  const beforeLive = live.length
-  const beforeVod = vod.length
-  collectFromConfig(json, url, `来自 ${label}`, live, vod)
-  if (live.length === beforeLive && vod.length === beforeVod && looksLikePlaylistText(text)) {
-    takeLive(live, label, url, url, `来自 ${label}`)
-  }
+  collectFromConfig(json, url, `来自 ${label}`, live, vod, stats)
 }
 
 export async function importTvboxSource(rawInput: string): Promise<ImportResult> {
   const input = String(rawInput || '').trim()
+  if (isPluginUrl(input)) throw new Error(PLUGIN_HINT)
   if (!/^https?:\/\//i.test(input)) throw new Error('请输入 http(s) 接口地址')
   const url = githubMirror(input)
   const fileName = url.split('/').pop()?.split('?')[0] || '自定义源'
   const live: ImportCandidate[] = []
   const vod: ImportCandidate[] = []
+  const stats: ImportStats = { skipped: 0 }
 
   const text = await fetchText(url)
+  const trimmed = text.trim()
+  if (MD5_ONLY_RE.test(trimmed)) {
+    throw new Error('该地址只返回一个 MD5 校验值，是插件/订阅的版本文件，不是可用的源；请填真正的配置或接口地址')
+  }
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[') && !looksLikePlaylistText(text) && PLUGIN_BODY_RE.test(text.slice(0, 4000))) {
+    throw new Error(PLUGIN_HINT)
+  }
 
   if (looksLikePlaylist(url)) {
     const label = fileName.replace(/\.(m3u8?|txt)$/i, '')
-    if (looksLikePlaylistText(text)) takeLive(live, label, url, url, '手动添加的直播列表')
-    else throw new Error('该地址没有返回可解析的直播列表内容')
-    return { label, live, vod }
+    if (looksLikePlaylistText(text)) {
+      takeLive(live, label, url, url, '手动添加的直播列表')
+      return { label, live, vod, skipped: 0 }
+    }
+    // 路径像直播表但内容是配置（例如饭太硬的 /tv），继续按 TVBox 配置解析
   }
 
   const json = parseTolerantJson(text)
   if (!json) {
     if (looksLikePlaylistText(text)) {
       takeLive(live, fileName, url, url, '直播列表')
-      return { label: fileName, live, vod }
+      return { label: fileName, live, vod, skipped: 0 }
     }
-    if (/\.php|provide\/vod/i.test(url)) {
+    if (/api\.php|provide\/vod/i.test(url)) {
       const api = normalizeVodApi(url, url)
       takeVod(vod, fileName, api, url, '采集接口')
       if (!vod.length) throw new Error('无法识别该接口内容')
-      return { label: fileName, live, vod }
+      return { label: fileName, live, vod, skipped: 0 }
     }
+    if (looksLikePlaylist(url)) throw new Error('该地址没有返回可解析的直播列表内容')
     throw new Error('无法识别：既不是 TVBox 配置/订阅，也不是直播列表或采集接口')
   }
 
   const label = str(json.name) || str(json.title) || fileName
   if (Array.isArray(json.urls) && json.urls.length && !json.lives && !json.sites) {
     const children = readArray(json.urls).slice(0, MAX_CHILD_CONFIGS)
-    await Promise.all(children.map((child) => expandChild(str(child.url), str(child.name), url, live, vod, 1)))
-    return { label, live, vod }
+    await Promise.all(children.map((child) => expandChild(str(child.url), str(child.name), url, live, vod, stats, 1)))
+    return { label, live, vod, skipped: stats.skipped }
   }
-  collectFromConfig(json, url, 'TVBox 配置', live, vod)
+  collectFromConfig(json, url, 'TVBox 配置', live, vod, stats)
   if (!live.length && !vod.length) {
+    if (stats.skipped) throw new Error(`该配置有 ${stats.skipped} 个爬虫/JS 站点，需要 TVBox 内核，KayTV 无法直接播放`)
     if (Array.isArray(json.spider) || str(json.spider)) throw new Error('该配置只有爬虫，没有可用的直播/采集接口')
     throw new Error('配置里没有解析到直播源或采集接口')
   }
-  return { label, live, vod }
+  return { label, live, vod, skipped: stats.skipped }
 }

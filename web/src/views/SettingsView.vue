@@ -794,7 +794,7 @@ onMounted(async () => {
           <div>
             <h2 class="panel-title">自定义 TVBox 接口</h2>
             <p class="panel-desc">
-              粘贴 TVBox 订阅集合（tv.json）、TVBox 配置、m3u/txt 直播列表或苹果CMS 采集接口地址，解析后可挑选添加；添加的源出现在直播页/搜索页并可用「检测源」验证。
+              粘贴 TVBox 订阅集合（tv.json）、TVBox 配置、m3u/txt 直播列表或苹果CMS 采集接口地址，解析后可挑选添加；添加的源出现在直播页/搜索页并可用「检测源」验证。XPTV/TVBox 的 JS 插件脚本（.js / .js.md5）需要专用运行环境，无法直接接入。
             </p>
           </div>
         </div>
@@ -855,6 +855,9 @@ onMounted(async () => {
               </label>
             </template>
           </div>
+          <p v-if="importResult.skipped" class="hint">
+            另有 {{ importResult.skipped }} 个站点是 TVBox 爬虫/JS 源，需要 TVBox 内核，KayTV 已跳过。
+          </p>
           <div class="server-actions">
             <button class="btn primary" data-nav type="button" @click="addSelected">添加选中的 {{ selectedCount }} 个</button>
             <button class="btn" data-nav type="button" @click="importResult = null">取消</button>

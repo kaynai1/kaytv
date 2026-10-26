@@ -14,7 +14,7 @@ const CORS = {
 const SESSION_TTL = 30 * 24 * 3600 * 1000
 const MAX_SYNC_BYTES = 512 * 1024
 const PBKDF2_ITERATIONS = 100000
-const PROBE_TIMEOUT = 9000
+const PROBE_TIMEOUT = 20000
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -194,6 +194,186 @@ function userPayload(row) {
   }
 }
 
+function stripJsonComments(text) {
+  let out = ''
+  let inString = false
+  let escape = false
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index]
+    if (inString) {
+      out += char
+      if (escape) escape = false
+      else if (char === '\\') escape = true
+      else if (char === '"') inString = false
+      continue
+    }
+    if (char === '"') {
+      inString = true
+      out += char
+      continue
+    }
+    if (char === '/' && text[index + 1] === '/') {
+      while (index < text.length && text[index] !== '\n') index++
+      out += '\n'
+      continue
+    }
+    if (char === '/' && text[index + 1] === '*') {
+      const end = text.indexOf('*/', index + 2)
+      index = end < 0 ? text.length : end + 1
+      continue
+    }
+    out += char
+  }
+  return out
+}
+
+function escapeControlsInStrings(text) {
+  let out = ''
+  let inString = false
+  let escape = false
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index]
+    if (!inString) {
+      if (char === '"') inString = true
+      out += char
+      continue
+    }
+    if (escape) {
+      out += char
+      escape = false
+      continue
+    }
+    if (char === '\\') {
+      out += char
+      escape = true
+      continue
+    }
+    if (char === '"') {
+      inString = false
+      out += char
+      continue
+    }
+    const code = char.charCodeAt(0)
+    if (code < 0x20) out += char === '\n' ? '\\n' : char === '\r' ? '\\r' : char === '\t' ? '\\t' : ' '
+    else out += char
+  }
+  return out
+}
+
+function parseConfigObject(text) {
+  const start = text.indexOf('{')
+  const end = text.lastIndexOf('}')
+  if (start < 0 || end <= start) return null
+  const body = text.slice(start, end + 1)
+  const noComments = stripJsonComments(body)
+  for (const variant of [body, noComments, escapeControlsInStrings(noComments)]) {
+    try {
+      const parsed = JSON.parse(variant)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed
+    } catch {
+      /* 下一种写法 */
+    }
+  }
+  return null
+}
+
+/** TVBox 配置可能带注释、字符串内换行，或被 base64 包在图片里 */
+function parseTvboxConfig(text) {
+  const direct = parseConfigObject(text)
+  if (direct) return direct
+  const matches = text.match(/[A-Za-z0-9+/][A-Za-z0-9+/\r\n]{180,}={0,2}/g)
+  if (!matches) return null
+  for (const match of [...matches].sort((a, b) => b.length - a.length).slice(0, 3)) {
+    try {
+      const binary = atob(match.replace(/[\r\n]/g, ''))
+      const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0))
+      const parsed = parseConfigObject(new TextDecoder().decode(bytes))
+      if (parsed) return parsed
+    } catch {
+      /* 不是可解码的配置 */
+    }
+  }
+  return null
+}
+
+function isPlayableHttp(raw) {
+  const value = String(raw || '')
+  if (!/^https?:\/\//i.test(value)) return false
+  const host = value.replace(/^https?:\/\//i, '').split('/')[0].split(':')[0]
+  if (/^(127\.|0\.0\.0\.0$|localhost$|\[::1\]$)/i.test(host)) return false
+  if (/^192\.168\./.test(host) || /^10\./.test(host) || /^172\.(1[6-9]|2\d|3[01])\./.test(host)) return false
+  return true
+}
+
+function resolvePlayableHttp(raw, base) {
+  const value = String(raw || '')
+  if (!value) return ''
+  try {
+    const resolved = new URL(value, base).href
+    return isPlayableHttp(resolved) ? resolved : ''
+  } catch {
+    return ''
+  }
+}
+
+function summarizeTvbox(config, base) {
+  let vod = 0
+  let live = 0
+  let skipped = 0
+  for (const item of Array.isArray(config.sites) ? config.sites : []) {
+    if (Number(item?.type) === 1 && resolvePlayableHttp(item?.api, base)) vod++
+    else if (item?.api || item?.name) skipped++
+  }
+  for (const item of Array.isArray(config.lives) ? config.lives : []) {
+    if (resolvePlayableHttp(item?.url, base)) live++
+    else {
+      for (const channel of Array.isArray(item?.channels) ? item.channels : []) {
+        if (resolvePlayableHttp((channel?.urls || [])[0], base)) live++
+      }
+    }
+  }
+  return { vod, live, skipped }
+}
+
+async function expandTvbox(text, base, signal, totals, seen, depth) {
+  const config = parseTvboxConfig(text)
+  if (!config) return
+  if (Array.isArray(config.urls) && config.urls.length && !config.sites && !config.lives) {
+    if (depth >= 2) return
+    await Promise.all(
+      config.urls.slice(0, 10).map(async (child) => {
+        let childUrl = ''
+        try {
+          childUrl = new URL(String(child?.url || ''), base).href
+        } catch {
+          return
+        }
+        if (!/^https?:\/\//i.test(childUrl) || seen.has(childUrl)) return
+        seen.add(childUrl)
+        try {
+          const response = await fetch(childUrl, {
+            headers: {
+              accept: '*/*',
+              'user-agent': 'KayTV-Hub/1.0 (+https://github.com/kaynai1/kaytv)'
+            },
+            redirect: 'follow',
+            signal
+          })
+          if (!response.ok) return
+          await expandTvbox(await response.text(), childUrl, signal, totals, seen, depth + 1)
+        } catch {
+          /* 单个子订阅失败不影响整体 */
+        }
+      })
+    )
+    return
+  }
+  const summary = summarizeTvbox(config, base)
+  totals.vod += summary.vod
+  totals.live += summary.live
+  totals.skipped += summary.skipped
+}
+
 async function probeSource(row) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT)
@@ -215,12 +395,26 @@ async function probeSource(row) {
     })
     const ms = Date.now() - started
     if (!response.ok) return { ok: false, ms, note: `HTTP ${response.status}` }
+    const text = await response.text()
+    const trimmed = text.trim()
+    let pathname = ''
+    try {
+      pathname = new URL(row.url).pathname
+    } catch {
+      /* 已在入库时校验过 http(s) */
+    }
+    if (/\.(?:js|js\.md5|md5)$/i.test(pathname) || /^[a-f0-9]{32}$/i.test(trimmed)) {
+      return { ok: false, ms, note: '这是 XPTV/TVBox 的 JS 插件文件，需要专用内核，无法直接展开' }
+    }
     if (row.kind === 'vod') {
-      const text = await response.text()
       let payload = null
       try {
         payload = JSON.parse(text)
       } catch {
+        /* 也许填的是 TVBox 配置 */
+      }
+      if (!payload) {
+        if (parseTvboxConfig(text)) return { ok: false, ms, note: '这是 TVBox 配置，请把源类型改成「TVBox 配置」' }
         return { ok: false, ms, note: '返回的不是 JSON' }
       }
       const list = Array.isArray(payload?.list) ? payload.list : []
@@ -228,14 +422,26 @@ async function probeSource(row) {
       return { ok: true, ms, note: `返回 ${list.length} 条` }
     }
     if (row.kind === 'live') {
-      const text = (await response.text()).slice(0, 200000)
-      if (!text.trim()) return { ok: false, ms, note: '内容为空' }
-      const playlist = /#EXTM3U|#EXTINF|#genre#/i.test(text)
+      const body = text.slice(0, 200000)
+      if (!body.trim()) return { ok: false, ms, note: '内容为空' }
+      const playlist = /#EXTM3U|#EXTINF|#genre#/i.test(body)
+      if (!playlist && parseTvboxConfig(body)) {
+        return { ok: false, ms, note: '这是 TVBox 配置，请把源类型改成「TVBox 配置」' }
+      }
       return { ok: playlist, ms, note: playlist ? '播放列表正常' : '能访问，但不像 m3u/txt 频道表' }
     }
-    const text = (await response.text()).slice(0, 200000)
     if (!text.trim()) return { ok: false, ms, note: '内容为空' }
-    return { ok: true, ms, note: '配置可访问，客户端会尝试展开' }
+    const config = parseTvboxConfig(text)
+    if (!config) return { ok: false, ms, note: '能访问，但不是可识别的 TVBox 配置' }
+    const totals = { vod: 0, live: 0, skipped: 0 }
+    await expandTvbox(text, row.url, controller.signal, totals, new Set([row.url]), 0)
+    const { vod, live, skipped } = totals
+    if (!vod && !live) return { ok: false, ms, note: `配置里只有 ${skipped} 个爬虫站点，客户端无法展开` }
+    return {
+      ok: true,
+      ms,
+      note: `可展开 ${vod} 个影视源、${live} 个直播源${skipped ? `；${skipped} 个爬虫站点无法接入` : ''}`
+    }
   } catch (error) {
     const ms = Date.now() - started
     const message = error?.name === 'AbortError' ? '超时' : String(error?.message || error)
