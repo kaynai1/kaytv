@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { useSettingsStore } from '../stores/settings'
 import { useLibraryStore } from '../stores/library'
+import { useCloudStore } from '../stores/cloud'
 import { toast } from '../composables/useToast'
 import AppIcon from '../components/AppIcon.vue'
 import { runtime } from '../api/runtime'
@@ -10,12 +11,13 @@ import { probeLiveSource, probeVodSource, rememberHealth } from '../api/standalo
 import { copyText, diagnosticsText, recentEvents } from '../api/diagnostics'
 import { checkForUpdate, hasUpdate, latestReleaseUrl, openExternal, preferredAsset, updateState } from '../api/updateCheck'
 import { qrDataUrl } from '../api/qr'
-import { addCustom, removeCustom, type AddInput } from '../api/customSources'
+import { addCustom, isCloudSource, removeCustom, type AddInput } from '../api/customSources'
 import { importTvboxSource, type ImportResult } from '../api/tvboxImport'
 import { liveProbes, probeOf, probeState, vodProbes, type ProbeKind } from '../composables/sourceProbeState'
 
 const settings = useSettingsStore()
 const library = useLibraryStore()
+const cloud = useCloudStore()
 
 const serverInput = ref(settings.serverUrl)
 const testing = ref(false)
@@ -35,6 +37,111 @@ const selectedCount = computed(
   () => (importResult.value?.live.filter((item) => item.active).length || 0) +
     (importResult.value?.vod.filter((item) => item.active).length || 0)
 )
+
+const cloudInput = ref(cloud.endpoint)
+const cloudSaving = ref(false)
+const cloudAccountOpen = ref(false)
+const cloudAuthing = ref(false)
+const cloudUsername = ref('')
+const cloudPassword = ref('')
+
+const cloudHost = computed(() => {
+  try {
+    return new URL(cloud.endpoint).host
+  } catch {
+    return cloud.endpoint || '未配置'
+  }
+})
+const cloudSyncLabel = computed(() => {
+  if (!cloud.lastSyncAt) return ''
+  const date = new Date(cloud.lastSyncAt)
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+})
+
+async function saveCloud() {
+  cloudSaving.value = true
+  try {
+    await cloud.setEndpoint(cloudInput.value)
+    if (cloud.online) {
+      toast.success(`已连接 ${cloud.siteName}：${cloud.sourceCount} 个云源，${cloud.banner ? '有 1 条公告' : '暂无公告'}`)
+    } else {
+      toast.error(cloud.error || '云后台连接失败')
+    }
+  } finally {
+    cloudSaving.value = false
+  }
+}
+
+async function syncCloud() {
+  cloudSaving.value = true
+  try {
+    const ok = await cloud.sync()
+    if (ok) toast.success(`云端已同步：${cloud.sourceCount} 个源${cloud.banner ? ' · 有新公告' : ''}`)
+    else toast.error(cloud.error || '云端同步失败')
+  } finally {
+    cloudSaving.value = false
+  }
+}
+
+function openCloudAdmin() {
+  openExternal(cloud.endpoint)
+}
+
+async function cloudLogin() {
+  const username = cloudUsername.value.trim()
+  if (!username || !cloudPassword.value) {
+    toast.info('请输入云端账号和密码')
+    return
+  }
+  cloudAuthing.value = true
+  try {
+    await cloud.login(username, cloudPassword.value)
+    cloudPassword.value = ''
+    cloudAccountOpen.value = false
+    toast.success(`已登录云端账号 ${cloud.account?.username || username}，收藏与进度已合并`)
+  } catch (error) {
+    toast.error(error instanceof Error ? error.message : '登录失败')
+  } finally {
+    cloudAuthing.value = false
+  }
+}
+
+async function cloudRegister() {
+  const username = cloudUsername.value.trim()
+  if (!username || cloudPassword.value.length < 6) {
+    toast.info('用户名必填，密码至少 6 位')
+    return
+  }
+  cloudAuthing.value = true
+  try {
+    const result = await cloud.register(username, cloudPassword.value)
+    cloudPassword.value = ''
+    if (result.pending) {
+      toast.info(result.message)
+    } else {
+      cloudAccountOpen.value = false
+      toast.success(result.message)
+    }
+  } catch (error) {
+    toast.error(error instanceof Error ? error.message : '注册失败')
+  } finally {
+    cloudAuthing.value = false
+  }
+}
+
+async function cloudSyncData() {
+  try {
+    await cloud.syncNow()
+    toast.success('收藏和观看进度已与云端对齐')
+  } catch (error) {
+    toast.error(error instanceof Error ? error.message : '同步失败')
+  }
+}
+
+async function cloudLogout() {
+  await cloud.logout()
+  toast.success('已退出云端账号，本机收藏与进度保留')
+}
 
 function enabledSources(kind: ProbeKind) {
   const list = kind === 'live' ? settings.liveSources : settings.vodSources
@@ -302,6 +409,7 @@ async function logoutAccount() {
 
 onMounted(async () => {
   await settings.init()
+  void cloud.init()
   if (!serverInput.value) serverInput.value = settings.serverUrl
   void qrDataUrl(latestReleaseUrl).then((value) => {
     releaseQr.value = value
@@ -406,6 +514,116 @@ onMounted(async () => {
         </p>
       </section>
 
+      <section class="panel span-2 cloud-panel">
+        <div class="panel-head">
+          <div>
+            <h2 class="panel-title">云后台</h2>
+            <p class="panel-desc">
+              在云端添加影视源、直播源、TVBox 订阅和公告，三端打开后自动同步；云后台挂在 Cloudflare Pages，不需要自己再买服务器。
+            </p>
+          </div>
+          <span class="connection" :class="{ online: cloud.online }">
+            <span class="status-dot" :class="{ online: cloud.online }" />
+            {{ cloud.online ? `已连接 · ${cloud.siteName}` : cloud.syncing ? '同步中…' : '未连接' }}
+          </span>
+        </div>
+
+        <div class="cloud-stats">
+          <span class="cloud-host">{{ cloudHost }}</span>
+          <span>云源 {{ cloud.sourceCount }} 个</span>
+          <span v-if="cloud.tvboxCount">TVBox 订阅 {{ cloud.tvboxCount }} 个</span>
+          <span>{{ cloud.banner ? '有新公告' : '无公告' }}</span>
+          <span v-if="cloudSyncLabel">上次同步 {{ cloudSyncLabel }}</span>
+        </div>
+
+        <label class="field">
+          <span class="field-label">云后台地址</span>
+          <div class="server-row">
+            <input
+              v-model="cloudInput"
+              class="input"
+              type="url"
+              inputmode="url"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="https://kaytv-hub.pages.dev"
+            />
+            <button class="btn primary" data-nav type="button" :disabled="cloudSaving" @click="saveCloud">
+              {{ cloudSaving ? '同步中…' : '保存并同步' }}
+            </button>
+          </div>
+        </label>
+
+        <div class="server-actions">
+          <button class="btn" data-nav type="button" :disabled="cloudSaving" @click="syncCloud">
+            <AppIcon name="refresh" :size="16" />
+            重新同步
+          </button>
+          <button class="btn" data-nav type="button" @click="openCloudAdmin">
+            <AppIcon name="external" :size="16" />
+            打开云管理后台
+          </button>
+          <button
+            v-if="!cloud.account"
+            class="btn"
+            data-nav
+            type="button"
+            @click="cloudAccountOpen = !cloudAccountOpen"
+          >
+            <AppIcon name="users" :size="16" />
+            {{ cloudAccountOpen ? '收起账号' : '登录 / 注册云端账号' }}
+          </button>
+          <template v-else>
+            <button class="btn" data-nav type="button" :disabled="cloud.syncingData" @click="cloudSyncData">
+              <AppIcon name="refresh" :size="16" />
+              {{ cloud.syncingData ? '对齐中…' : '对齐收藏与进度' }}
+            </button>
+            <button class="btn ghost" data-nav type="button" @click="cloudLogout">退出云端账号</button>
+          </template>
+        </div>
+
+        <p v-if="cloud.error" class="cloud-error">{{ cloud.error }}</p>
+        <p class="hint">
+          云源只在「内置模式」生效，公告三端通用。地址留空会用默认云后台；收藏与进度同步是可选项，不登录也能正常看。
+        </p>
+
+        <div v-if="cloudAccountOpen && !cloud.account" class="cloud-auth">
+          <input
+            v-model="cloudUsername"
+            class="input"
+            type="text"
+            autocomplete="username"
+            placeholder="用户名（2-24 位）"
+          />
+          <input
+            v-model="cloudPassword"
+            class="input"
+            type="password"
+            autocomplete="current-password"
+            placeholder="密码（至少 6 位）"
+          />
+          <button class="btn primary" data-nav type="button" :disabled="cloudAuthing" @click="cloudLogin">
+            {{ cloudAuthing ? '处理中…' : '登录' }}
+          </button>
+          <button
+            class="btn"
+            data-nav
+            type="button"
+            :disabled="cloudAuthing || !cloud.registrationOpen"
+            @click="cloudRegister"
+          >
+            注册
+          </button>
+        </div>
+        <p v-if="cloud.account" class="hint">
+          已登录云端账号 <strong>{{ cloud.account.username }}</strong>
+          {{ cloud.account.device ? ` · ${cloud.account.device}` : '' }}。换设备登录后会自动合并收藏与观看进度。
+        </p>
+        <p v-else-if="!cloud.registrationOpen && cloudAccountOpen" class="hint">
+          云后台当前关闭了注册，需要让管理员在「用户」里手动开通。
+        </p>
+      </section>
+
       <section class="panel">
         <div class="panel-head">
           <div>
@@ -438,6 +656,7 @@ onMounted(async () => {
             <div class="source-info">
               <div class="source-line">
                 <span class="source-name">{{ source.name }}</span>
+                <span v-if="isCloudSource(source.id)" class="cloud-src-tag">云端</span>
                 <span
                   v-if="probeOf('live', source.id)"
                   class="probe-badge"
@@ -458,7 +677,7 @@ onMounted(async () => {
             </div>
             <div class="source-actions">
               <button
-                v-if="isCustom(source.id)"
+                v-if="isCustom(source.id) && !isCloudSource(source.id)"
                 class="btn sm ghost"
                 data-nav
                 type="button"
@@ -524,6 +743,7 @@ onMounted(async () => {
             <div class="source-info">
               <div class="source-line">
                 <span class="source-name">{{ source.name }}</span>
+                <span v-if="isCloudSource(source.id)" class="cloud-src-tag">云端</span>
                 <span
                   v-if="probeOf('vod', source.id)"
                   class="probe-badge"
@@ -544,7 +764,7 @@ onMounted(async () => {
             </div>
             <div class="source-actions">
               <button
-                v-if="isCustom(source.id)"
+                v-if="isCustom(source.id) && !isCloudSource(source.id)"
                 class="btn sm ghost"
                 data-nav
                 type="button"
@@ -1198,6 +1418,45 @@ a.btn {
 .about-link {
   margin-top: 14px;
 }
+.cloud-panel {
+  border-color: rgba(96, 165, 250, 0.26);
+  background:
+    linear-gradient(120deg, rgba(37, 99, 235, 0.1), transparent 46%),
+    var(--panel, rgba(18, 18, 18, 0.92));
+}
+.cloud-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin: 2px 0 14px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.cloud-host {
+  color: #8ec5ff;
+  font-weight: 600;
+}
+.cloud-auth {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto auto;
+  gap: 10px;
+  margin-top: 14px;
+}
+.cloud-error {
+  margin: 10px 0 0;
+  font-size: 12.5px;
+  color: var(--bad, #ff8a8a);
+}
+.cloud-src-tag {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid rgba(96, 165, 250, 0.35);
+  border-radius: 4px;
+  background: rgba(37, 99, 235, 0.14);
+  color: #9fcbff;
+  font-size: 10.5px;
+  line-height: 1.5;
+}
 @media (max-width: 860px) {
   .settings-grid {
     grid-template-columns: 1fr;
@@ -1210,6 +1469,9 @@ a.btn {
   }
   .server-row {
     flex-direction: column;
+  }
+  .cloud-auth {
+    grid-template-columns: 1fr 1fr;
   }
   .import-row {
     grid-template-columns: 1fr;

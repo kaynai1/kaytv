@@ -2,6 +2,7 @@ package com.kaynai.kaytv;
 
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.ActivityInfo;
 import android.database.ContentObserver;
 import android.media.AudioManager;
 import android.os.Bundle;
@@ -72,6 +73,31 @@ public class MainActivity extends BridgeActivity {
                             getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
                         } else {
                             getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                        }
+                    }
+                }
+            );
+        }
+
+        /** 全屏播放时由 H5 调 Activity 级方向锁，WebView 的 screen.orientation.lock 在安卓上不可靠 */
+        @JavascriptInterface
+        public void setOrientation(final String value) {
+            runOnUiThread(
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        int target;
+                        if ("landscape".equals(value)) {
+                            target = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE;
+                        } else if ("portrait".equals(value)) {
+                            target = ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT;
+                        } else {
+                            target = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED;
+                        }
+                        try {
+                            setRequestedOrientation(target);
+                        } catch (Exception ignored) {
+                            /* 个别 ROM 会拒绝，保持当前方向 */
                         }
                     }
                 }

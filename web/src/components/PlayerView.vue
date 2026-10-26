@@ -20,6 +20,7 @@ const settings = useSettingsStore()
 const liveStore = useLiveStore()
 
 const root = ref<HTMLElement | null>(null)
+const stage = ref<HTMLElement | null>(null)
 const video = ref<HTMLVideoElement | null>(null)
 const playing = ref(false)
 const waiting = ref(false)
@@ -46,6 +47,7 @@ const fillMode = ref<'contain' | 'cover'>('contain')
 const rate = ref(1)
 const skipIntro = ref(0)
 const skipOutro = ref(0)
+const gestureHint = ref('')
 
 const RATES = [0.5, 0.75, 1, 1.25, 1.5, 2, 3]
 const SKIP_STEPS = [0, 5, 10, 15, 30, 60]
@@ -65,6 +67,14 @@ let saveMark = 0
 let pushedState = false
 let resumeAfterHide = false
 let lastFocused: HTMLElement | null = null
+let gestureStart = { x: 0, y: 0, at: 0 }
+let longPressTimer = 0
+let longPressActive = false
+let swipeMoved = false
+let controlsShownAtTouch = true
+let lastTapAt = 0
+let singleTapTimer = 0
+let hintTimer = 0
 
 let lineAttempt = 0
 let lineAttemptKey = ''
@@ -140,6 +150,19 @@ const sheetMode = computed(
     !!vod.value &&
     portrait.value &&
     !isFullscreen.value
+)
+
+/** 手势只给手机/平板，TV 大屏模式和电脑端继续用进度条与方向键 */
+const phoneGestures = computed(() => runtime.native && !settings.tvMode)
+
+/** 暂停后只留中间的播放键，播放时它跟着控件一起淡出 */
+const centerPlayVisible = computed(
+  () =>
+    !error.value &&
+    !waiting.value &&
+    !drawerOpen.value &&
+    !menu.value &&
+    (!playing.value || controlsVisible.value)
 )
 
 const lineGroups = computed(() => {
@@ -773,8 +796,131 @@ function togglePlay() {
   const element = video.value
   if (!element) return
   wake()
-  if (element.paused) void startPlayback()
-  else element.pause()
+  if (element.paused) {
+    void startPlayback()
+    if (phoneGestures.value) flashHint('继续播放')
+  } else {
+    element.pause()
+    if (phoneGestures.value) flashHint('已暂停')
+  }
+}
+
+/* ---------- 手机手势：左右划 15 秒、长按 2 倍速、双击暂停、单击收放控件 ---------- */
+
+function flashHint(text: string, hold = 900) {
+  gestureHint.value = text
+  window.clearTimeout(hintTimer)
+  hintTimer = window.setTimeout(() => {
+    gestureHint.value = ''
+  }, hold)
+}
+
+function stopLongPress() {
+  window.clearTimeout(longPressTimer)
+  longPressTimer = 0
+}
+
+function releaseLongPress() {
+  if (!longPressActive) return
+  longPressActive = false
+  applyRate()
+  flashHint(rate.value === 1 ? '已恢复常速' : `已恢复 ${rate.value}x`, 700)
+}
+
+function onStageTouchStart(event: TouchEvent) {
+  if (!phoneGestures.value || event.touches.length !== 1) return
+  const target = event.target as HTMLElement | null
+  if (target?.closest('button, input, .player-error, .player-spinner')) return
+  const touch = event.touches[0]
+  gestureStart = { x: touch.clientX, y: touch.clientY, at: Date.now() }
+  controlsShownAtTouch = controlsVisible.value
+  swipeMoved = false
+  longPressActive = false
+  stopLongPress()
+  if (isLive.value || error.value) return
+  longPressTimer = window.setTimeout(() => {
+    const element = video.value
+    if (!element || element.paused) return
+    longPressActive = true
+    element.playbackRate = 2
+    flashHint('2 倍速播放中', 1400)
+  }, 460)
+}
+
+function onStageTouchMove(event: TouchEvent) {
+  if (!phoneGestures.value || event.touches.length !== 1) return
+  const touch = event.touches[0]
+  const dx = touch.clientX - gestureStart.x
+  const dy = touch.clientY - gestureStart.y
+  if (longPressActive) {
+    if (Math.abs(dx) > 18 || Math.abs(dy) > 18) releaseLongPress()
+    return
+  }
+  if (Math.abs(dx) < 12 || Math.abs(dx) <= Math.abs(dy) * 1.2) return
+  stopLongPress()
+  if (isLive.value) return
+  swipeMoved = true
+  if (event.cancelable) event.preventDefault()
+  const base = video.value?.currentTime || position.value
+  const target = Math.max(0, Math.min(Math.max(0, duration.value - 0.3), base + (dx > 0 ? 15 : -15)))
+  flashHint(`${dx > 0 ? '快进' : '快退'} 15 秒 · ${formatClock(target)}`, 600)
+}
+
+function onStageTouchEnd(event: TouchEvent) {
+  if (!phoneGestures.value) return
+  stopLongPress()
+  const touch = event.changedTouches[0]
+  const dx = touch ? touch.clientX - gestureStart.x : 0
+  const dy = touch ? touch.clientY - gestureStart.y : 0
+  const elapsed = Date.now() - gestureStart.at
+  if (longPressActive) {
+    releaseLongPress()
+    return
+  }
+  if (swipeMoved || Math.abs(dx) > 44) {
+    swipeMoved = false
+    if (!isLive.value) {
+      const delta = dx > 0 ? 15 : -15
+      seekBy(delta)
+      flashHint(delta > 0 ? '快进 15 秒' : '快退 15 秒', 700)
+    }
+    return
+  }
+  if (Math.abs(dx) > 12 || Math.abs(dy) > 12 || elapsed > 650) return
+  const now = Date.now()
+  if (now - lastTapAt < 320) {
+    window.clearTimeout(singleTapTimer)
+    lastTapAt = 0
+    togglePlay()
+    return
+  }
+  lastTapAt = now
+  singleTapTimer = window.setTimeout(() => {
+    lastTapAt = 0
+    if (drawerOpen.value || menu.value) return
+    if (controlsShownAtTouch) {
+      controlsVisible.value = false
+      window.clearTimeout(hideTimer)
+    } else {
+      wake()
+    }
+  }, 280)
+}
+
+function onStageTouchCancel() {
+  stopLongPress()
+  releaseLongPress()
+  swipeMoved = false
+}
+
+function onVideoClick() {
+  if (phoneGestures.value) return
+  togglePlay()
+}
+
+function onVideoDoubleClick() {
+  if (phoneGestures.value) return
+  toggleFullscreen()
 }
 
 function seekBy(delta: number) {
@@ -1329,6 +1475,16 @@ function setSystemBarsHidden(hidden: boolean) {
 }
 
 async function lockOrientation(value: 'landscape' | 'any') {
+  // 原生方向锁最可靠：安卓 WebView 的 screen.orientation.lock 在非真全屏时经常被忽略
+  const native = nativeBridge()
+  if (native?.setOrientation) {
+    try {
+      native.setOrientation(value)
+      return
+    } catch {
+      /* 老版本原生层没有这个方法时退回 Web API */
+    }
+  }
   const orientation = screen.orientation as
     | (ScreenOrientation & { lock?: (target: string) => Promise<void> })
     | undefined
@@ -1389,7 +1545,9 @@ watch(portrait, (upright) => {
 function wake() {
   controlsVisible.value = true
   window.clearTimeout(hideTimer)
-  if (!playing.value || drawerOpen.value || error.value || menu.value) return
+  if (drawerOpen.value || error.value || menu.value) return
+  // 手机暂停后控件也要收起，只留中间的大播放键；电脑/TV 暂停时保持原来的常驻控件
+  if (!playing.value && !phoneGestures.value) return
   hideTimer = window.setTimeout(() => {
     controlsVisible.value = false
   }, 3800)
@@ -1577,6 +1735,12 @@ watch(
       })
     } else {
       window.clearTimeout(hideTimer)
+      window.clearTimeout(singleTapTimer)
+      window.clearTimeout(hintTimer)
+      stopLongPress()
+      longPressActive = false
+      swipeMoved = false
+      gestureHint.value = ''
       document.body.style.overflow = ''
       drawerOpen.value = false
       drawerTab.value = 'list'
@@ -1597,11 +1761,28 @@ watch(
 )
 
 watch(playing, (value) => {
+  if (!value && phoneGestures.value) {
+    window.clearTimeout(hideTimer)
+    controlsVisible.value = false
+    return
+  }
   if (!value) controlsVisible.value = true
   wake()
 })
 
-watch(drawerOpen, () => wake())
+watch(drawerOpen, () => {
+  // 手机关掉抽屉时如果仍处于暂停，只留中间播放键
+  if (!drawerOpen.value && phoneGestures.value && !playing.value) {
+    window.clearTimeout(hideTimer)
+    controlsVisible.value = false
+    return
+  }
+  wake()
+})
+
+function onOverlayMove() {
+  if (!phoneGestures.value) wake()
+}
 
 onMounted(() => {
   restoreVolume()
@@ -1639,10 +1820,18 @@ onBeforeUnmount(() => {
       :class="{ 'controls-idle': !controlsVisible || drawerOpen, sheet: sheetMode }"
       tabindex="-1"
       @keydown.capture="onKeydown"
-      @mousemove="wake"
+      @mousemove="onOverlayMove"
       @touchstart.passive="wake"
     >
-      <div class="player-stage">
+      <div
+        ref="stage"
+        class="player-stage"
+        @touchstart="onStageTouchStart"
+        @touchmove="onStageTouchMove"
+        @touchend="onStageTouchEnd"
+        @touchcancel="onStageTouchCancel"
+        @contextmenu.prevent
+      >
       <video
         ref="video"
         class="player-video"
@@ -1661,9 +1850,26 @@ onBeforeUnmount(() => {
         @canplay="waiting = false; clearFallback(); clearStall()"
         @ended="onEnded"
         @error="onNativeError"
-        @click="togglePlay"
-        @dblclick="toggleFullscreen"
+        @click="onVideoClick"
+        @dblclick="onVideoDoubleClick"
       />
+
+      <button
+        v-if="phoneGestures && centerPlayVisible"
+        class="player-center-btn"
+        :class="{ paused: !playing }"
+        type="button"
+        :aria-label="playing ? '暂停' : '播放'"
+        @click.stop="togglePlay"
+      >
+        <span class="player-center-ring">
+          <AppIcon :name="playing ? 'pause' : 'play'" :size="34" />
+        </span>
+      </button>
+
+      <div v-if="gestureHint" class="player-gesture-hint">
+        <span>{{ gestureHint }}</span>
+      </div>
 
       <div v-if="waiting && !error" class="player-spinner">
         <span class="spinner" />
@@ -1973,6 +2179,7 @@ onBeforeUnmount(() => {
           @cast="openCast"
           @copy="void copyPlaybackUrl()"
           @fullscreen="enterFullscreen"
+          @sources="openDrawer('sources')"
         />
       </div>
 
@@ -2024,6 +2231,7 @@ onBeforeUnmount(() => {
               @cast="openCast"
               @copy="void copyPlaybackUrl()"
               @fullscreen="enterFullscreen()"
+              @sources="openDrawer('sources')"
             />
           </div>
 
@@ -2222,6 +2430,79 @@ onBeforeUnmount(() => {
 
 .player-overlay.sheet .player-error {
   position: fixed;
+}
+
+.player-center-btn {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 2;
+  transform: translate(-50%, -50%);
+  width: 78px;
+  height: 78px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 50%;
+  background: rgba(8, 10, 14, 0.48);
+  color: #fff;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  transition:
+    opacity 0.2s ease,
+    transform 0.15s ease,
+    background 0.15s ease;
+}
+.player-center-btn:active {
+  transform: translate(-50%, -50%) scale(0.92);
+  background: rgba(8, 10, 14, 0.7);
+}
+.player-center-btn.paused {
+  width: 88px;
+  height: 88px;
+  border-color: rgba(255, 255, 255, 0.3);
+  background: rgba(8, 10, 14, 0.62);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+}
+.player-center-ring {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  padding-left: 0;
+}
+.player-center-btn .play-glyph {
+  margin-left: 4px;
+}
+
+.player-gesture-hint {
+  position: absolute;
+  top: 16%;
+  left: 50%;
+  z-index: 4;
+  transform: translateX(-50%);
+  padding: 9px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  background: rgba(8, 10, 14, 0.72);
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  white-space: nowrap;
+  pointer-events: none;
+  backdrop-filter: blur(10px);
+}
+
+.player-overlay.sheet .player-center-btn {
+  width: 62px;
+  height: 62px;
+}
+.player-overlay.sheet .player-center-btn.paused {
+  width: 68px;
+  height: 68px;
+}
+.player-overlay.sheet .player-gesture-hint {
+  top: 10px;
 }
 
 .player-sheet {

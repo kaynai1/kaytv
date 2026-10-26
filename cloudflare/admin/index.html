@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>KayTV 云后台</title>
+    <link rel="stylesheet" href="./style.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><rect width='24' height='24' rx='6' fill='%23e50914'/><path d='M8 5.5v13l11-6.5z' fill='white'/></svg>" />
+  </head>
+  <body>
+    <div id="login" class="login hidden">
+      <div class="login-card">
+        <div class="brand big"><span class="mark">▶</span> KayTV 云后台</div>
+        <p class="muted">输入 Cloudflare Pages 项目里配置的 <code>ADMIN_TOKEN</code>。口令只保存在本机浏览器。</p>
+        <form id="login-form">
+          <input id="token-input" class="input" type="password" placeholder="管理员口令" autocomplete="current-password" />
+          <button class="btn primary" type="submit">进入后台</button>
+        </form>
+        <p id="login-error" class="error"></p>
+        <p class="muted small">第一次部署：先在 Cloudflare 项目 Settings → Variables and Secrets 添加 <code>ADMIN_TOKEN</code>。</p>
+      </div>
+    </div>
+
+    <div id="app" class="hidden">
+      <header class="topbar">
+        <div class="brand"><span class="mark">▶</span> KayTV 云后台</div>
+        <nav id="tabs" class="tabs">
+          <button class="tab active" data-tab="overview">概览</button>
+          <button class="tab" data-tab="sources">源管理</button>
+          <button class="tab" data-tab="announcements">公告</button>
+          <button class="tab" data-tab="users">用户</button>
+          <button class="tab" data-tab="settings">设置</button>
+        </nav>
+        <div class="top-actions">
+          <span id="hub-url" class="hub-url"></span>
+          <button id="logout" class="btn ghost sm" type="button">退出</button>
+        </div>
+      </header>
+
+      <main>
+        <section id="panel-overview" class="panel-page">
+          <div class="page-head">
+            <div>
+              <h1>概览</h1>
+              <p class="muted">影视源、TVBox、公告和云账号都从这里统一管理，三端打开后自动同步。</p>
+            </div>
+          </div>
+          <div id="overview-cards" class="stat-grid"></div>
+          <div class="card split">
+            <div>
+              <h2>客户端怎么接</h2>
+              <ol class="steps">
+                <li>三端打开「设置 → 云后台」。</li>
+                <li>粘贴本页右上角的云后台地址，保存并同步。</li>
+                <li>公告和启用的源会立即出现在手机、TV、Windows 上；连不上后台时照常使用内置源。</li>
+              </ol>
+              <div class="inline">
+                <code id="config-url" class="code"></code>
+                <button class="btn sm" data-copy="config" type="button">复制配置地址</button>
+              </div>
+            </div>
+            <div class="tips">
+              <h3>建议开启</h3>
+              <p>先填 2-3 个稳定影视源并点「检测」；用户注册可以设置成需要审核；公告支持定时上下线。</p>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <h2>最近注册</h2>
+              <button class="btn ghost sm" data-goto="users" type="button">查看全部</button>
+            </div>
+            <div id="recent-users" class="list"></div>
+          </div>
+        </section>
+
+        <section id="panel-sources" class="panel-page hidden">
+          <div class="page-head">
+            <div>
+              <h1>源管理</h1>
+              <p class="muted">影视源按苹果CMS v10 接口填写；TVBox 填配置/订阅地址，客户端会展开其中的直播与影视接口。</p>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <h2 id="source-form-title">添加源</h2>
+              <button id="source-reset" class="btn ghost sm hidden" type="button">取消编辑</button>
+            </div>
+            <form id="source-form" class="form-grid">
+              <label>类型
+                <select id="source-kind" class="input">
+                  <option value="vod">影视源（CMS）</option>
+                  <option value="live">直播源（m3u/txt）</option>
+                  <option value="tvbox">TVBox 配置</option>
+                </select>
+              </label>
+              <label>名称
+                <input id="source-name" class="input" maxlength="40" placeholder="例如：看剧AI" />
+              </label>
+              <label class="wide">接口地址
+                <input id="source-url" class="input" placeholder="https://example.com/api.php/provide/vod/" />
+              </label>
+              <label>类型标记
+                <input id="source-type" class="input" maxlength="20" placeholder="留空自动" />
+              </label>
+              <label>排序（越小越前）
+                <input id="source-sort" class="input" type="number" value="100" />
+              </label>
+              <label class="wide">备注
+                <input id="source-note" class="input" maxlength="200" placeholder="给客户端看的说明，可留空" />
+              </label>
+              <label class="check"><input id="source-enabled" type="checkbox" checked /> 启用并同步到三端</label>
+              <div class="form-actions">
+                <button class="btn primary" type="submit">保存源</button>
+              </div>
+            </form>
+            <p id="source-error" class="error"></p>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <h2>批量添加</h2>
+              <span class="muted small">每行一个地址，可写成「名称,地址」</span>
+            </div>
+            <div class="bulk">
+              <label>类型
+                <select id="bulk-kind" class="input">
+                  <option value="vod">影视源（CMS）</option>
+                  <option value="live">直播源</option>
+                  <option value="tvbox">TVBox 配置</option>
+                </select>
+              </label>
+              <textarea id="bulk-text" class="input" rows="4" placeholder="看剧AI,https://example.com/api.php/provide/vod/&#10;https://example.com/live.m3u"></textarea>
+              <button id="bulk-add" class="btn" type="button">批量添加</button>
+            </div>
+            <p id="bulk-result" class="muted small"></p>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <h2>全部源</h2>
+              <div class="inline">
+                <select id="source-filter" class="input compact">
+                  <option value="">全部类型</option>
+                  <option value="vod">影视源</option>
+                  <option value="live">直播源</option>
+                  <option value="tvbox">TVBox</option>
+                </select>
+                <button id="source-refresh" class="btn ghost sm" type="button">刷新</button>
+              </div>
+            </div>
+            <div id="source-list" class="list"></div>
+          </div>
+        </section>
+
+        <section id="panel-announcements" class="panel-page hidden">
+          <div class="page-head">
+            <div>
+              <h1>公告</h1>
+              <p class="muted">启用的公告会显示在三端顶部，可设置开始和结束时间。</p>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <h2 id="ann-form-title">发布公告</h2>
+              <button id="ann-reset" class="btn ghost sm hidden" type="button">取消编辑</button>
+            </div>
+            <form id="ann-form" class="form-grid">
+              <label class="wide">标题
+                <input id="ann-title" class="input" maxlength="60" placeholder="例如：今晚 23:00 维护" />
+              </label>
+              <label class="wide">内容
+                <textarea id="ann-body" class="input" rows="3" maxlength="2000" placeholder="公告正文，可留空"></textarea>
+              </label>
+              <label>级别
+                <select id="ann-level" class="input">
+                  <option value="info">普通</option>
+                  <option value="warning">提醒</option>
+                  <option value="critical">重要</option>
+                </select>
+              </label>
+              <label>跳转链接（可选）
+                <input id="ann-link" class="input" placeholder="https://..." />
+              </label>
+              <label>开始时间（可选）
+                <input id="ann-start" class="input" type="datetime-local" />
+              </label>
+              <label>结束时间（可选）
+                <input id="ann-end" class="input" type="datetime-local" />
+              </label>
+              <label class="check"><input id="ann-active" type="checkbox" checked /> 立即启用</label>
+              <div class="form-actions">
+                <button class="btn primary" type="submit">保存公告</button>
+              </div>
+            </form>
+            <p id="ann-error" class="error"></p>
+          </div>
+          <div class="card">
+            <div class="card-head"><h2>公告列表</h2></div>
+            <div id="ann-list" class="list"></div>
+          </div>
+        </section>
+
+        <section id="panel-users" class="panel-page hidden">
+          <div class="page-head">
+            <div>
+              <h1>用户</h1>
+              <p class="muted">云账号只用于同步收藏和观看进度，不登录也能照常看片。审核、停用或删除都在这里。</p>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <h2>注册用户</h2>
+              <div class="inline">
+                <input id="user-search" class="input compact" placeholder="搜索用户名" />
+                <button id="user-refresh" class="btn ghost sm" type="button">查询</button>
+              </div>
+            </div>
+            <div id="user-list" class="list"></div>
+          </div>
+        </section>
+
+        <section id="panel-settings" class="panel-page hidden">
+          <div class="page-head">
+            <div>
+              <h1>站点设置</h1>
+              <p class="muted">改名、开放注册和审核策略，保存后客户端下次同步生效。</p>
+            </div>
+          </div>
+          <div class="card">
+            <form id="settings-form" class="form-grid">
+              <label class="wide">站点名称
+                <input id="set-site-name" class="input" maxlength="40" placeholder="KayTV" />
+              </label>
+              <label class="check"><input id="set-reg-open" type="checkbox" /> 开放注册（关闭后客户端注册会提示未开放）</label>
+              <label class="check"><input id="set-auto-approve" type="checkbox" /> 注册后自动通过（关闭则需要在「用户」里审核）</label>
+              <div class="form-actions">
+                <button class="btn primary" type="submit">保存设置</button>
+              </div>
+            </form>
+            <p id="settings-result" class="muted small"></p>
+          </div>
+          <div class="card">
+            <h2>安全提示</h2>
+            <p class="muted small">
+              ADMIN_TOKEN 建议至少 24 位随机字符，只放在 Cloudflare 的 Secrets 里，不要写进仓库。
+              云账号密码使用 PBKDF2-SHA256 加盐存储，管理后台永远看不到明文。
+            </p>
+          </div>
+        </section>
+      </main>
+      <div id="toast" class="toast"></div>
+    </div>
+    <script src="./app.js" type="module"></script>
+  </body>
+</html>

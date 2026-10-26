@@ -1,0 +1,11 @@
+name = "kaytv-hub"
+compatibility_date = "2026-01-01"
+pages_build_output_dir = "admin"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "kaytv-hub"
+database_id = "1bcb311b-9e89-4d97-899a-77da206094bc"
+
+# 管理员口令不要写在这里，用：
+# npx wrangler pages secret put ADMIN_TOKEN --project-name kaytv-hub

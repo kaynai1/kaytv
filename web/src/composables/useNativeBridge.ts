@@ -13,6 +13,8 @@ interface NativeBridge {
   setSystemVolume(percent: number): void
   /** 拉起系统的无线投屏 / 多屏互动面板，返回是否成功 */
   openCastPanel(): boolean
+  /** Android Activity 级方向锁：全屏播放强制横屏，退出后恢复重力感应 */
+  setOrientation(value: 'landscape' | 'portrait' | 'any'): void
 }
 
 export function nativeBridge(): NativeBridge | undefined {

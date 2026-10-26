@@ -35,7 +35,7 @@
 固定直链（永远指向最新版）：
 
 ```
-https://github.com/kaynai1/kaytv/releases/latest/download/KayTV-0.3.3-windows-setup.exe
+https://github.com/kaynai1/kaytv/releases/latest/download/KayTV-0.4.0-windows-setup.exe
 ```
 
 版本号会变，所以更省事的做法是直接打开 <https://github.com/kaynai1/kaytv/releases/latest> 选自己那台设备的文件。应用内 **设置 → 版本更新** 会显示二维码，手机扫码即可打开这个页面，电视端也能用浏览器直接下载。
@@ -104,9 +104,20 @@ docker compose up -d --build
 
 ## 3. 客户端连接
 
-Windows 安装包 / 免安装版、Android 端和网页版都内置默认源，**打开即用**：搜索、分类、详情、播放全部在客户端本地完成，不依赖 NAS。
+Windows 安装包 / 免安装版、Android 端和网页版都内置默认源，**打开即用**：搜索、分类、详情、播放全部在客户端本地完成，不依赖 NAS，也不需要注册。
 
 NAS 只在需要这些能力时才要连接：管理后台、多用户登录、统一签名代理、订阅同步与每日源检测。
+
+### 云后台（可选，无需服务器）
+
+想自己加源、发公告、管注册用户，又不想开 NAS，可以用随附的 Cloudflare Pages 云后台：
+
+- 地址：<https://kaytv-hub.pages.dev>（打开就是管理页，输入管理员口令登录）
+- 可管理影视源、直播源、TVBox 配置、公告和注册用户；保存后三端自动同步
+- 三端默认已内置该地址，不需要任何配置；在「设置 → 云后台」可查看状态或换成自己的部署
+- 云账号登录可选，用于在三端合并收藏和观看进度；不登录不影响看片
+
+部署自己的云后台见 [`cloudflare/README.md`](cloudflare/README.md)，全部跑在 Cloudflare 免费额度内。
 
 1. 打开客户端「设置」
 2. 服务端地址填 `http://NAS地址:8080`（也可以带端口映射后的地址）
@@ -192,8 +203,8 @@ GitHub Actions 用仓库 Secrets 注入：`TMDB_API_KEY`、`KANJU_SECRET`，另�
 - `.github/workflows/ci.yml`：PR / main 的前端类型检查与构建
 
 ```bash
-git tag v0.3.3
-git push origin v0.3.3
+git tag v0.4.0
+git push origin v0.4.0
 ```
 
 产物命名固定为 `KayTV-<版本>-windows-setup.exe` / `-windows-portable.exe` / `-phone.apk` / `-tv.apk`，配合 `releases/latest/download/...` 可以做成不随版本变化的取货直链。

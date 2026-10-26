@@ -16,6 +16,7 @@ const emit = defineEmits<{
   (e: 'cast'): void
   (e: 'copy'): void
   (e: 'fullscreen'): void
+  (e: 'sources'): void
 }>()
 
 const player = usePlayerStore()
@@ -146,6 +147,10 @@ watch(
       <button v-if="canCast" class="info-action" type="button" data-nav @click="emit('cast')">
         <AppIcon name="cast" :size="20" />
         <span>投屏</span>
+      </button>
+      <button class="info-action" type="button" data-nav @click="emit('sources')">
+        <AppIcon name="server" :size="20" />
+        <span>播放源</span>
       </button>
       <button class="info-action" type="button" data-nav @click="emit('copy')">
         <AppIcon name="link" :size="20" />
@@ -291,7 +296,7 @@ watch(
 
 .info-actions {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
   gap: 6px;
   padding: 12px 0;
   border-top: 1px solid var(--line);

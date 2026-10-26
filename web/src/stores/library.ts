@@ -127,6 +127,45 @@ export const useLibraryStore = defineStore('library', {
     clearFavorites() {
       this.favorites = []
       this.saveFavorites()
+    },
+    /** 并集合并云端收藏与进度，同一条取更新时间较新的；用于登录或换机拉取 */
+    mergeCloud(remote: {
+      favorites?: FavoriteItem[]
+      history?: Record<string, HistoryEntry>
+    }): boolean {
+      let changed = false
+      const known = new Map(this.favorites.map((item) => [itemKey(item.sourceId, item.id), item]))
+      for (const item of remote.favorites || []) {
+        if (!item || !item.sourceId || !item.id) continue
+        const key = itemKey(item.sourceId, item.id)
+        const local = known.get(key)
+        if (!local) {
+          this.favorites.push({ ...item })
+          known.set(key, item)
+          changed = true
+        } else if (Number(item.addedAt) > Number(local.addedAt)) {
+          Object.assign(local, item)
+          changed = true
+        }
+      }
+      if (changed) {
+        this.favorites.sort((a, b) => Number(b.addedAt) - Number(a.addedAt))
+        this.saveFavorites()
+      }
+      let historyChanged = false
+      for (const [key, entry] of Object.entries(remote.history || {})) {
+        if (!entry || !entry.sourceId || !entry.id) continue
+        const local = this.history[key]
+        if (!local || Number(entry.updatedAt) > Number(local.updatedAt)) {
+          this.history[key] = { ...entry }
+          historyChanged = true
+        }
+      }
+      if (historyChanged) {
+        this.saveHistory()
+        changed = true
+      }
+      return changed
     }
   }
 })

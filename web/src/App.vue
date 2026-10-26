@@ -7,6 +7,7 @@ import ToastHost from './components/ToastHost.vue'
 import { useSettingsStore } from './stores/settings'
 import { usePlayerStore } from './stores/player'
 import { useLibraryStore } from './stores/library'
+import { useCloudStore } from './stores/cloud'
 import { focusFirstNav, useSpatialNav } from './composables/useSpatialNav'
 import { runtime } from './api/runtime'
 import { checkForUpdate, hasUpdate } from './api/updateCheck'
@@ -15,6 +16,7 @@ import { toast } from './composables/useToast'
 const settings = useSettingsStore()
 const player = usePlayerStore()
 const library = useLibraryStore()
+const cloud = useCloudStore()
 const route = useRoute()
 const router = useRouter()
 
@@ -108,6 +110,15 @@ watch(
   }
 )
 
+/* 登录云端账号后，收藏和进度改动延迟合并上传，避免每点一次就发请求 */
+watch(
+  () => [library.favorites, library.history],
+  () => {
+    if (cloud.loggedIn) cloud.queuePush()
+  },
+  { deep: true }
+)
+
 useSpatialNav()
 
 onMounted(async () => {
@@ -118,6 +129,7 @@ onMounted(async () => {
   onScroll()
   settings.autoTvMode()
   await settings.init()
+  void cloud.init()
   await nextTick()
   if (!player.open && settings.tvMode) focusFirstNav()
   if (runtime.packaged) {
@@ -205,6 +217,18 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
+    <div v-if="cloud.banner" class="cloud-banner" :class="cloud.banner.level">
+      <AppIcon :name="cloud.banner.level === 'info' ? 'info' : 'warn'" :size="17" />
+      <div class="cloud-banner-body">
+        <strong>{{ cloud.banner.title }}</strong>
+        <span v-if="cloud.banner.body">{{ cloud.banner.body }}</span>
+        <a v-if="cloud.banner.link" :href="cloud.banner.link" target="_blank" rel="noopener" data-nav>查看详情</a>
+      </div>
+      <button class="cloud-banner-close" type="button" title="关闭公告" data-nav @click="cloud.dismissAnnouncement()">
+        <AppIcon name="close" :size="15" />
+      </button>
+    </div>
+
     <div v-if="showOffline" class="offline-bar">
       <AppIcon name="warn" :size="15" />
       <span>未连接 NAS 服务端：直播可尝试直连，影视与搜索需要服务端代理。</span>
@@ -226,5 +250,80 @@ onBeforeUnmount(() => {
 }
 .admin-mode .brand-mark {
   opacity: 0.75;
+}
+
+.cloud-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0 auto;
+  padding: 10px 22px;
+  width: 100%;
+  max-width: 1480px;
+  color: #cfe7ff;
+  background: linear-gradient(90deg, rgba(40, 108, 180, 0.24), transparent 70%);
+  border-bottom: 1px solid rgba(96, 165, 250, 0.22);
+}
+
+.cloud-banner.warning,
+.cloud-banner.critical {
+  color: #ffd8b5;
+  background: linear-gradient(90deg, rgba(180, 100, 40, 0.26), transparent 70%);
+  border-bottom-color: rgba(251, 146, 60, 0.24);
+}
+
+.cloud-banner > :first-child {
+  flex: none;
+  margin-top: 2px;
+  color: #8ec5ff;
+}
+
+.cloud-banner.warning > :first-child,
+.cloud-banner.critical > :first-child {
+  color: #fdba74;
+}
+
+.cloud-banner-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 12px;
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.cloud-banner-body strong {
+  font-weight: 700;
+}
+
+.cloud-banner-body span {
+  color: var(--muted);
+}
+
+.cloud-banner-body a {
+  color: inherit;
+  font-weight: 600;
+  text-underline-offset: 3px;
+}
+
+.cloud-banner-close {
+  flex: none;
+  margin-left: auto;
+  padding: 2px;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+@media (max-width: 720px) {
+  .cloud-banner {
+    padding: 9px 14px;
+  }
+  .cloud-banner-body {
+    flex-direction: column;
+    gap: 2px;
+  }
 }
 </style>
