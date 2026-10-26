@@ -1539,6 +1539,15 @@ interface SystemBarsPlugin {
 }
 
 function setSystemBarsHidden(hidden: boolean) {
+  const native = nativeBridge()
+  if (native?.setImmersive) {
+    try {
+      native.setImmersive(hidden)
+      return
+    } catch {
+      /* 老版本原生层没有这个方法时退回 Capacitor 插件 */
+    }
+  }
   const capacitor = (window as { Capacitor?: { Plugins?: Record<string, SystemBarsPlugin> } })
     .Capacitor
   const bars = capacitor?.Plugins?.SystemBars
@@ -2797,8 +2806,8 @@ onBeforeUnmount(() => {
   gap: 14px;
   padding: 22px clamp(16px, 2.4vw, 36px) 64px;
   /* 横屏挖孔在左侧时按钮不能压在摄像头下面 */
-  padding-left: max(clamp(16px, 2.4vw, 36px), calc(env(safe-area-inset-left) + 12px));
-  padding-right: max(clamp(16px, 2.4vw, 36px), calc(env(safe-area-inset-right) + 12px));
+  padding-left: max(clamp(16px, 2.4vw, 36px), calc(var(--kaytv-safe-left, env(safe-area-inset-left, 0px)) + 12px));
+  padding-right: max(clamp(16px, 2.4vw, 36px), calc(var(--kaytv-safe-right, env(safe-area-inset-right, 0px)) + 12px));
   background: linear-gradient(180deg, rgba(0, 0, 0, 0.82), rgba(0, 0, 0, 0));
 }
 
@@ -2895,8 +2904,8 @@ onBeforeUnmount(() => {
 .player-bottom {
   bottom: 0;
   padding: 64px clamp(16px, 2.4vw, 36px) 22px;
-  padding-left: max(clamp(16px, 2.4vw, 36px), calc(env(safe-area-inset-left) + 12px));
-  padding-right: max(clamp(16px, 2.4vw, 36px), calc(env(safe-area-inset-right) + 12px));
+  padding-left: max(clamp(16px, 2.4vw, 36px), calc(var(--kaytv-safe-left, env(safe-area-inset-left, 0px)) + 12px));
+  padding-right: max(clamp(16px, 2.4vw, 36px), calc(var(--kaytv-safe-right, env(safe-area-inset-right, 0px)) + 12px));
   background: linear-gradient(0deg, rgba(0, 0, 0, 0.88), rgba(0, 0, 0, 0));
   display: flex;
   flex-direction: column;

@@ -13,6 +13,8 @@
         <item name="windowActionBar">false</item>
         <item name="windowNoTitle">true</item>
         <item name="android:background">@null</item>
+        <!-- 全屏铺进挖孔区时，透出的窗口底色必须是深色，避免边缘泛白 -->
+        <item name="android:windowBackground">@color/kaytv_window</item>
     </style>
 
 

@@ -19,6 +19,8 @@ interface NativeBridge {
   openCastPanel(): boolean
   /** Android Activity 级方向锁：全屏播放强制横屏，退出后恢复重力感应 */
   setOrientation(value: 'landscape' | 'portrait' | 'any'): void
+  /** 全屏播放：隐藏系统栏并让画面铺进挖孔区，退出时还原 */
+  setImmersive(enabled: boolean): void
 }
 
 export function nativeBridge(): NativeBridge | undefined {

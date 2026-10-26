@@ -7,6 +7,11 @@ const config: CapacitorConfig = {
   plugins: {
     CapacitorHttp: {
       enabled: true
+    },
+    SystemBars: {
+      // 安全区由 MainActivity 自己接管，播放器全屏时才能铺进挖孔区
+      insetsHandling: 'disable',
+      style: 'DARK'
     }
   },
   android: {

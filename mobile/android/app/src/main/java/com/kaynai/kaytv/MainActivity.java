@@ -3,6 +3,7 @@ package com.kaynai.kaytv;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
+import android.content.res.Configuration;
 import android.database.ContentObserver;
 import android.media.AudioManager;
 import android.os.Build;
@@ -11,19 +12,29 @@ import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
 import android.view.KeyEvent;
+import android.view.View;
 import android.view.WindowManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
 import com.getcapacitor.Bridge;
 import com.getcapacitor.BridgeActivity;
+import java.util.Locale;
 
 public class MainActivity extends BridgeActivity {
 
     private NativeBridge nativeBridge;
+    private volatile boolean playerImmersive = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        getWindow().getDecorView().setBackgroundColor(0xFF08090C);
+        applyWindowInsets();
         drawUnderCutout();
         Bridge bridge = getBridge();
         WebView webView = bridge == null ? null : bridge.getWebView();
@@ -54,6 +65,64 @@ public class MainActivity extends BridgeActivity {
         } catch (Exception ignored) {
             /* 个别 ROM 不支持，保持默认 */
         }
+    }
+
+    /**
+     * Capacitor 的 SystemBars 在旧 WebView 上会给 decor 加安全区 padding，横屏时挖孔一侧会留白。
+     * 这里自己接管 insets：普通页面照旧让开系统栏，全屏播放时 padding 归零，画面一直铺到挖孔区。
+     */
+    private void applyWindowInsets() {
+        View decor = getWindow().getDecorView();
+        ViewCompat.setOnApplyWindowInsetsListener(
+            decor,
+            (view, insets) -> {
+                Insets bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout());
+                Insets ime = insets.getInsets(WindowInsetsCompat.Type.ime());
+                boolean keyboard = insets.isVisible(WindowInsetsCompat.Type.ime());
+                if (playerImmersive) {
+                    view.setPadding(0, 0, 0, keyboard ? ime.bottom : 0);
+                } else {
+                    view.setPadding(bars.left, bars.top, bars.right, keyboard ? ime.bottom : bars.bottom);
+                }
+                applySafeAreaCss(bars);
+                // 交给 WebView 处理会再缩一次，这里消费掉
+                return new WindowInsetsCompat.Builder(insets)
+                    .setInsets(
+                        WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout(),
+                        Insets.of(0, 0, 0, 0)
+                    )
+                    .build();
+            }
+        );
+    }
+
+    /** 播放器按钮条要按挖孔宽度避开摄像头，旧内核的 env() 不可靠，这里直接下发 CSS 变量 */
+    private void applySafeAreaCss(Insets bars) {
+        Bridge bridge = getBridge();
+        WebView webView = bridge == null ? null : bridge.getWebView();
+        if (webView == null) return;
+        float density = getResources().getDisplayMetrics().density;
+        if (density <= 0f) density = 1f;
+        String script = String.format(
+            Locale.US,
+            "document.documentElement.style.setProperty('--kaytv-safe-top','%.2fpx');"
+                + "document.documentElement.style.setProperty('--kaytv-safe-right','%.2fpx');"
+                + "document.documentElement.style.setProperty('--kaytv-safe-bottom','%.2fpx');"
+                + "document.documentElement.style.setProperty('--kaytv-safe-left','%.2fpx');",
+            bars.top / density,
+            bars.right / density,
+            bars.bottom / density,
+            bars.left / density
+        );
+        webView.evaluateJavascript(script, null);
+    }
+
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        // SystemBars 转屏时会用主题的 windowBackground 重刷 decor 底色，这里压回深色，避免边缘泛白
+        getWindow().getDecorView().setBackgroundColor(0xFF08090C);
+        getWindow().getDecorView().requestApplyInsets();
     }
 
     @SuppressWarnings("deprecation")
@@ -121,6 +190,29 @@ public class MainActivity extends BridgeActivity {
                         } else {
                             getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
                         }
+                    }
+                }
+            );
+        }
+
+        /** 全屏播放：隐藏系统栏并把窗口 padding 归零，让画面铺进挖孔区；退出时还原 */
+        @JavascriptInterface
+        public void setImmersive(final boolean enable) {
+            runOnUiThread(
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        playerImmersive = enable;
+                        View decor = getWindow().getDecorView();
+                        WindowInsetsControllerCompat controller = WindowCompat.getInsetsController(getWindow(), decor);
+                        controller.setSystemBarsBehavior(WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                        if (enable) {
+                            controller.hide(WindowInsetsCompat.Type.systemBars());
+                        } else {
+                            controller.show(WindowInsetsCompat.Type.systemBars());
+                        }
+                        decor.requestApplyInsets();
+                        decor.postDelayed(decor::requestApplyInsets, 300);
                     }
                 }
             );
