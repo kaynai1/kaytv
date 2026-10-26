@@ -95,14 +95,25 @@ async function readBody(request) {
   }
 }
 
+function registrationModeOf(map) {
+  const mode = map.registration_mode
+  if (mode === 'open' || mode === 'invite' || mode === 'closed') return mode
+  return map.registration_open === '0' ? 'closed' : 'open'
+}
+
 async function getSettings(env) {
   const rows = await env.DB.prepare('SELECT key, value FROM settings').all()
   const map = {}
   for (const row of rows.results || []) map[row.key] = row.value
+  const registrationMode = registrationModeOf(map)
   return {
     siteName: map.site_name || 'KayTV',
-    registrationOpen: map.registration_open !== '0',
-    autoApprove: map.registration_auto_approve !== '0'
+    registrationOpen: registrationMode !== 'closed',
+    registrationMode,
+    autoApprove: map.registration_auto_approve !== '0',
+    minVersion: String(map.min_version || '').trim(),
+    updateUrl: String(map.update_url || '').trim(),
+    failThreshold: Math.min(5, Math.max(1, toInt(map.alert_fail_threshold, 2)))
   }
 }
 
@@ -124,7 +135,13 @@ async function publicConfig(env) {
     ok: true,
     siteName: settings.siteName,
     version: now,
-    registration: { open: settings.registrationOpen, autoApprove: settings.autoApprove },
+    registration: {
+      open: settings.registrationOpen,
+      mode: settings.registrationMode,
+      autoApprove: settings.autoApprove
+    },
+    minVersion: settings.minVersion,
+    updateUrl: settings.updateUrl,
     announcement: announcement
       ? {
           id: announcement.id,
@@ -156,31 +173,201 @@ async function requireAdmin(request, env) {
   return {}
 }
 
+function deviceFromUa(raw) {
+  const ua = String(raw || '')
+  if (/android/i.test(ua)) return /tv|aft|bravia|googletv/i.test(ua) ? 'Android TV' : 'Android 手机'
+  if (/iphone|ipad|ipod/i.test(ua)) return 'iOS'
+  if (/windows nt/i.test(ua)) return 'Windows'
+  if (/mac os x/i.test(ua)) return 'macOS'
+  if (/linux/i.test(ua)) return 'Linux'
+  return '未知设备'
+}
+
+function clientIp(request) {
+  return clean(request.headers.get('cf-connecting-ip') || '', 60)
+}
+
 async function currentUser(request, env) {
   const header = request.headers.get('authorization') || ''
   const token = header.replace(/^Bearer\s+/i, '').trim()
   if (!token) return null
   const row = await env.DB.prepare(
-    `SELECT u.id, u.username, u.status, u.device, u.created_at, u.last_seen, s.expires_at
+    `SELECT u.id, u.username, u.status, u.device, u.created_at, u.last_seen,
+            s.id AS session_id, s.last_seen AS session_seen
      FROM sessions s JOIN users u ON u.id = s.user_id
      WHERE s.token = ?1 AND s.expires_at > ?2`
   )
     .bind(token, Date.now())
     .first()
   if (!row || row.status !== 'active') return null
+  if (Date.now() - (row.session_seen || 0) > 5 * 60 * 1000) {
+    await env.DB.prepare('UPDATE sessions SET last_seen = ?1 WHERE id = ?2').bind(Date.now(), row.session_id).run()
+  }
   return row
 }
 
-async function createSession(env, userId) {
+async function createSession(env, userId, request, device) {
   const token = randomToken()
+  const id = crypto.randomUUID()
   const now = Date.now()
+  const ip = request ? clientIp(request) : ''
+  const ua = request ? clean(request.headers.get('user-agent') || '', 300) : ''
   await env.DB.prepare('DELETE FROM sessions WHERE expires_at < ?1').bind(now).run()
   await env.DB.prepare(
-    'INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?1, ?2, ?3, ?4)'
+    `INSERT INTO sessions (token, id, user_id, device, ip, ua, created_at, last_seen, expires_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`
   )
-    .bind(token, userId, now, now + SESSION_TTL)
+    .bind(token, id, userId, clean(device, 80) || deviceFromUa(ua), ip, ua, now, now, now + SESSION_TTL)
     .run()
   return { token, expiresAt: now + SESSION_TTL }
+}
+
+async function audit(env, request, action, target = '', detail = '', actor = 'admin') {
+  try {
+    await env.DB.prepare(
+      'INSERT INTO audit_logs (id, actor, action, target, detail, ip, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)'
+    )
+      .bind(
+        crypto.randomUUID(),
+        clean(actor, 20) || 'admin',
+        clean(action, 40),
+        clean(target, 120),
+        clean(typeof detail === 'string' ? detail : JSON.stringify(detail), 500),
+        request ? clientIp(request) : '',
+        Date.now()
+      )
+      .run()
+  } catch (error) {
+    console.error('audit failed', error)
+  }
+}
+
+async function openAlert(env, { kind, level = 'warning', title, body = '', sourceId = '', dedupe = '' }) {
+  const key = dedupe || `${kind}:${sourceId}:${title}`
+  const exists = await env.DB.prepare("SELECT id FROM alerts WHERE dedupe = ?1 AND status = 'open'").bind(key).first()
+  if (exists) return false
+  await env.DB.prepare(
+    `INSERT INTO alerts (id, kind, level, title, body, source_id, dedupe, status, created_at, resolved_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'open', ?8, 0)`
+  )
+    .bind(crypto.randomUUID(), clean(kind, 30), clean(level, 10), clean(title, 120), clean(body, 500), sourceId, key, Date.now())
+    .run()
+  return true
+}
+
+async function resolveAlerts(env, kind, sourceId) {
+  await env.DB.prepare(
+    "UPDATE alerts SET status = 'resolved', resolved_at = ?1 WHERE status = 'open' AND kind = ?2 AND source_id = ?3"
+  )
+    .bind(Date.now(), kind, sourceId)
+    .run()
+}
+
+async function recordSourceCheck(env, source, result, trigger, threshold) {
+  const now = Date.now()
+  await env.DB.prepare(
+    'UPDATE sources SET probe_ok=?1, probe_ms=?2, probe_note=?3, probed_at=?4 WHERE id=?5'
+  )
+    .bind(result.ok ? 1 : 0, result.ms, result.note, now, source.id)
+    .run()
+  await env.DB.prepare(
+    'INSERT INTO source_checks (id, source_id, ok, ms, note, trigger, checked_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)'
+  )
+    .bind(crypto.randomUUID(), source.id, result.ok ? 1 : 0, result.ms, clean(result.note, 200), clean(trigger, 20), now)
+    .run()
+  if (result.ok) {
+    await resolveAlerts(env, 'source_fail', source.id)
+    return false
+  }
+  const rows = await env.DB.prepare(
+    'SELECT ok FROM source_checks WHERE source_id = ?1 ORDER BY checked_at DESC LIMIT ?2'
+  )
+    .bind(source.id, threshold)
+    .all()
+  const recent = rows.results || []
+  if (recent.length >= threshold && recent.every((row) => !row.ok)) {
+    return openAlert(env, {
+      kind: 'source_fail',
+      level: 'critical',
+      title: `源不可用：${source.name}`,
+      body: `连续 ${threshold} 次检测失败，最近一次：${result.note}`,
+      sourceId: source.id,
+      dedupe: `source_fail:${source.id}`
+    })
+  }
+  return false
+}
+
+async function checkSourceExpiry(env) {
+  const now = Date.now()
+  const rows = await env.DB.prepare('SELECT id, name, expires_at FROM sources WHERE expires_at > 0').all()
+  let created = 0
+  for (const row of rows.results || []) {
+    if (row.expires_at <= now) {
+      const added = await openAlert(env, {
+        kind: 'source_expire',
+        level: 'critical',
+        title: `源已过期：${row.name}`,
+        body: `有效期已过（${new Date(row.expires_at).toISOString().slice(0, 10)}），请更新地址或续期`,
+        sourceId: row.id,
+        dedupe: `source_expire:${row.id}:${row.expires_at}`
+      })
+      if (added) created++
+    } else if (row.expires_at - now <= 3 * 86400000) {
+      const days = Math.max(1, Math.ceil((row.expires_at - now) / 86400000))
+      const added = await openAlert(env, {
+        kind: 'source_expire',
+        level: 'warning',
+        title: `源即将到期：${row.name}`,
+        body: `${days} 天后到期（${new Date(row.expires_at).toISOString().slice(0, 10)}）`,
+        sourceId: row.id,
+        dedupe: `source_expire:${row.id}:${row.expires_at}`
+      })
+      if (added) created++
+    } else {
+      await resolveAlerts(env, 'source_expire', row.id)
+    }
+  }
+  return created
+}
+
+async function runHealthSweep(env, trigger, limit = 4, since = 0) {
+  const cutoff = since > 0 ? since : Date.now()
+  const settings = await getSettings(env)
+  const rows = await env.DB.prepare(
+    'SELECT * FROM sources WHERE enabled = 1 AND probed_at < ?1 ORDER BY probed_at ASC, sort ASC LIMIT ?2'
+  )
+    .bind(cutoff, Math.min(20, Math.max(1, limit)))
+    .all()
+  const sources = rows.results || []
+  const results = await Promise.all(
+    sources.map(async (source) => ({ source, result: await probeSource(source) }))
+  )
+  let alerts = 0
+  for (const { source, result } of results) {
+    if (await recordSourceCheck(env, source, result, trigger, settings.failThreshold)) alerts++
+  }
+  alerts += await checkSourceExpiry(env)
+  const remainingRow = await env.DB.prepare(
+    'SELECT COUNT(*) AS n FROM sources WHERE enabled = 1 AND probed_at < ?1'
+  )
+    .bind(cutoff)
+    .first()
+  const remaining = remainingRow?.n || 0
+  if (!remaining) {
+    await env.DB.prepare('DELETE FROM source_checks WHERE checked_at < ?1')
+      .bind(Date.now() - 30 * 86400000)
+      .run()
+    await env.DB.prepare("DELETE FROM sessions WHERE expires_at < ?1").bind(Date.now()).run()
+  }
+  return {
+    since: cutoff,
+    checked: sources.length,
+    ok: results.filter((item) => item.result.ok).length,
+    failed: results.filter((item) => !item.result.ok).length,
+    alerts,
+    remaining
+  }
 }
 
 function userPayload(row) {
@@ -463,9 +650,24 @@ async function handlePublic(segments, request, env) {
     return json(await publicConfig(env))
   }
 
+  if (segments[0] === 'internal' && segments[1] === 'health-sweep' && method === 'POST') {
+    if (!env.CRON_TOKEN) return fail('服务端还没有配置 CRON_TOKEN', 503)
+    const header = (request.headers.get('authorization') || '').replace(/^Bearer\s+/i, '').trim()
+    if (!header || !(await safeEqual(header, env.CRON_TOKEN))) return fail('无权访问', 401)
+    let body = {}
+    try {
+      body = await readBody(request)
+    } catch {
+      body = {}
+    }
+    const result = await runHealthSweep(env, 'cron', 4, toInt(body.since, 0))
+    await audit(env, null, 'sweep.run', '', `定时体检 ${result.checked} 个源，失败 ${result.failed} 个`, 'cron')
+    return json({ ok: true, ...result })
+  }
+
   if (segments[0] === 'register' && method === 'POST') {
     const settings = await getSettings(env)
-    if (!settings.registrationOpen) return fail('后台暂未开放注册', 403)
+    if (settings.registrationMode === 'closed') return fail('后台暂未开放注册', 403)
     let body
     try {
       body = await readBody(request)
@@ -479,12 +681,34 @@ async function handlePublic(segments, request, env) {
       return fail('用户名需要 2-24 位，支持中文、字母、数字、下划线')
     }
     if (password.length < 6 || password.length > 64) return fail('密码需要 6-64 位')
+    const now = Date.now()
+    let invite = null
+    if (settings.registrationMode === 'invite') {
+      const code = clean(body.inviteCode, 32).toUpperCase()
+      if (!code) return fail('注册需要邀请码', 403)
+      invite = await env.DB.prepare('SELECT * FROM invite_codes WHERE code = ?1').bind(code).first()
+      if (
+        !invite ||
+        !invite.enabled ||
+        invite.used_count >= invite.max_uses ||
+        (invite.expires_at && invite.expires_at < now)
+      ) {
+        return fail('邀请码无效、已用完或已过期', 403)
+      }
+    }
     const exists = await env.DB.prepare('SELECT id FROM users WHERE username = ?1').bind(username).first()
     if (exists) return fail('这个用户名已经注册了', 409)
+    if (invite) {
+      const consumed = await env.DB.prepare(
+        'UPDATE invite_codes SET used_count = used_count + 1 WHERE id = ?1 AND enabled = 1 AND used_count < max_uses'
+      )
+        .bind(invite.id)
+        .run()
+      if ((consumed.meta?.changes || 0) < 1) return fail('邀请码刚刚被用完了，请换一个', 409)
+    }
     const id = crypto.randomUUID()
     const salt = randomToken(16)
     const passHash = await hashPassword(password, salt)
-    const now = Date.now()
     const status = settings.autoApprove ? 'active' : 'pending'
     await env.DB.prepare(
       `INSERT INTO users (id, username, pass_hash, salt, status, device, note, created_at, last_seen)
@@ -492,10 +716,18 @@ async function handlePublic(segments, request, env) {
     )
       .bind(id, username, passHash, salt, status, device, now, now)
       .run()
+    await audit(
+      env,
+      request,
+      'user.register',
+      username,
+      invite ? `邀请码 ${invite.code} 注册` : '开放注册',
+      'user'
+    )
     if (status === 'pending') {
       return json({ ok: true, pending: true, message: '注册成功，等管理员审核通过后就能登录同步' })
     }
-    const session = await createSession(env, id)
+    const session = await createSession(env, id, request, device)
     return json({
       ok: true,
       token: session.token,
@@ -521,13 +753,14 @@ async function handlePublic(segments, request, env) {
     if (row.status === 'pending') return fail('账号还在等管理员审核', 403)
     if (row.status === 'blocked') return fail('账号已被管理员停用', 403)
     const now = Date.now()
-    await env.DB.prepare('UPDATE users SET last_seen = ?1 WHERE id = ?2').bind(now, row.id).run()
-    const session = await createSession(env, row.id)
+    const device = clean(body.device, 80) || deviceFromUa(request.headers.get('user-agent') || '')
+    await env.DB.prepare('UPDATE users SET last_seen = ?1, device = ?2 WHERE id = ?3').bind(now, device, row.id).run()
+    const session = await createSession(env, row.id, request, device)
     return json({
       ok: true,
       token: session.token,
       expiresAt: session.expiresAt,
-      user: { id: row.id, username: row.username, status: row.status, device: row.device, createdAt: row.created_at, lastSeen: now }
+      user: { id: row.id, username: row.username, status: row.status, device, createdAt: row.created_at, lastSeen: now }
     })
   }
 
@@ -542,6 +775,101 @@ async function handlePublic(segments, request, env) {
     const user = await currentUser(request, env)
     if (!user) return fail('登录已失效', 401)
     return json({ ok: true, user: userPayload(user) })
+  }
+
+  if (segments[0] === 'sessions') {
+    const user = await currentUser(request, env)
+    if (!user) return fail('登录已失效', 401)
+    if (method === 'GET' && !segments[1]) {
+      const rows = await env.DB.prepare(
+        `SELECT id, device, ip, ua, created_at, last_seen FROM sessions
+         WHERE user_id = ?1 AND expires_at > ?2 ORDER BY last_seen DESC LIMIT 30`
+      )
+        .bind(user.id, Date.now())
+        .all()
+      return json({
+        ok: true,
+        sessions: (rows.results || []).map((row) => ({
+          id: row.id,
+          device: row.device || '',
+          ip: row.ip || '',
+          ua: row.ua || '',
+          createdAt: row.created_at,
+          lastSeen: row.last_seen,
+          current: row.id === user.session_id
+        }))
+      })
+    }
+    if (method === 'POST' && segments[1] === 'revoke') {
+      let body
+      try {
+        body = await readBody(request)
+      } catch (error) {
+        return fail(error.message)
+      }
+      const target = clean(body.id, 40)
+      if (!target) return fail('请选择要下线的设备')
+      await env.DB.prepare('DELETE FROM sessions WHERE id = ?1 AND user_id = ?2').bind(target, user.id).run()
+      await audit(env, request, 'session.revoke', user.username, `下线设备 ${target}`, 'user')
+      return json({ ok: true, self: target === user.session_id })
+    }
+    if (method === 'POST' && segments[1] === 'revoke-others') {
+      await env.DB.prepare('DELETE FROM sessions WHERE user_id = ?1 AND id != ?2').bind(user.id, user.session_id).run()
+      await audit(env, request, 'session.revoke-others', user.username, '下线其他所有设备', 'user')
+      return json({ ok: true })
+    }
+  }
+
+  if (segments[0] === 'feedback') {
+    const user = await currentUser(request, env)
+    if (method === 'POST' && !segments[1]) {
+      const ip = clientIp(request)
+      const recent = ip
+        ? await env.DB.prepare('SELECT created_at FROM feedback WHERE ip = ?1 ORDER BY created_at DESC LIMIT 1').bind(ip).first()
+        : null
+      if (recent && Date.now() - recent.created_at < 15000) return fail('提交太快了，15 秒后再试', 429)
+      let body
+      try {
+        body = await readBody(request)
+      } catch (error) {
+        return fail(error.message)
+      }
+      const title = clean(body.title, 80)
+      const content = clean(body.body, 1500)
+      if (!title) return fail('请填写标题')
+      if (content.length < 4) return fail('内容至少写几个字，方便我们处理')
+      const kind = ['request', 'problem', 'other'].includes(body.kind) ? body.kind : 'feedback'
+      const now = Date.now()
+      const rowId = crypto.randomUUID()
+      await env.DB.prepare(
+        `INSERT INTO feedback (id, user_id, username, kind, title, body, contact, device, ip, status, admin_note, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'open', '', ?10, ?10)`
+      )
+        .bind(
+          rowId,
+          user?.id || '',
+          user?.username || '',
+          kind,
+          title,
+          content,
+          clean(body.contact, 120),
+          clean(body.device, 80) || deviceFromUa(request.headers.get('user-agent') || ''),
+          ip,
+          now
+        )
+        .run()
+      return json({ ok: true, id: rowId, message: '已收到，管理员会尽快处理' })
+    }
+    if (method === 'GET' && !segments[1]) {
+      if (!user) return fail('登录已失效', 401)
+      const rows = await env.DB.prepare(
+        `SELECT id, kind, title, body, status, admin_note, created_at, updated_at FROM feedback
+         WHERE user_id = ?1 ORDER BY created_at DESC LIMIT 20`
+      )
+        .bind(user.id)
+        .all()
+      return json({ ok: true, feedback: rows.results || [] })
+    }
   }
 
   if (segments[0] === 'sync') {
@@ -604,26 +932,204 @@ async function handleAdmin(segments, request, env) {
       env.DB.prepare("SELECT kind, COUNT(*) AS n FROM sources GROUP BY kind"),
       env.DB.prepare("SELECT status, COUNT(*) AS n FROM users GROUP BY status"),
       env.DB.prepare('SELECT COUNT(*) AS n FROM announcements'),
-      env.DB.prepare('SELECT COUNT(*) AS n FROM user_data')
+      env.DB.prepare('SELECT COUNT(*) AS n FROM user_data'),
+      env.DB.prepare("SELECT COUNT(*) AS n FROM alerts WHERE status = 'open'"),
+      env.DB.prepare("SELECT COUNT(*) AS n FROM feedback WHERE status = 'open'"),
+      env.DB.prepare('SELECT COUNT(*) AS n FROM sessions WHERE expires_at > ?1').bind(Date.now()),
+      env.DB.prepare("SELECT COUNT(*) AS n FROM invite_codes WHERE enabled = 1 AND (expires_at = 0 OR expires_at > ?1)").bind(Date.now())
     ])
     const sourceMap = { vod: 0, live: 0, tvbox: 0 }
     for (const row of counts[0].results || []) sourceMap[row.kind] = row.n
     const userMap = { pending: 0, active: 0, blocked: 0 }
     for (const row of counts[1].results || []) userMap[row.status] = row.n
     const settings = await getSettings(env)
+    const lastSweep = await env.DB.prepare('SELECT MAX(checked_at) AS at FROM source_checks').first()
     return json({
       ok: true,
       sources: sourceMap,
       users: userMap,
       announcements: counts[2].results?.[0]?.n || 0,
       syncUsers: counts[3].results?.[0]?.n || 0,
+      openAlerts: counts[4].results?.[0]?.n || 0,
+      openFeedback: counts[5].results?.[0]?.n || 0,
+      activeSessions: counts[6].results?.[0]?.n || 0,
+      activeInvites: counts[7].results?.[0]?.n || 0,
+      lastCheckAt: lastSweep?.at || 0,
       settings
     })
   }
 
+  if (area === 'sweep' && method === 'POST') {
+    let body = {}
+    try {
+      body = await readBody(request)
+    } catch {
+      body = {}
+    }
+    const limit = Math.min(10, Math.max(1, toInt(body.limit, 6)))
+    const result = await runHealthSweep(env, 'manual', limit, toInt(body.since, 0))
+    await audit(env, request, 'sweep.run', '', `手动体检 ${result.checked} 个源，失败 ${result.failed} 个，剩余 ${result.remaining} 个`)
+    return json({ ok: true, ...result })
+  }
+
+  if (area === 'alerts') {
+    if (method === 'GET' && !id) {
+      const status = clean(new URL(request.url).searchParams.get('status') || 'open', 12)
+      const rows =
+        status === 'all'
+          ? await env.DB.prepare('SELECT * FROM alerts ORDER BY created_at DESC LIMIT 200').all()
+          : await env.DB.prepare('SELECT * FROM alerts WHERE status = ?1 ORDER BY created_at DESC LIMIT 200')
+              .bind(status)
+              .all()
+      return json({ ok: true, alerts: rows.results || [] })
+    }
+    if (method === 'PUT' && id) {
+      const row = await env.DB.prepare('SELECT * FROM alerts WHERE id = ?1').bind(id).first()
+      if (!row) return fail('告警不存在', 404)
+      await env.DB.prepare("UPDATE alerts SET status = 'resolved', resolved_at = ?1 WHERE id = ?2")
+        .bind(Date.now(), id)
+        .run()
+      await audit(env, request, 'alert.resolve', row.title, '手动标记已处理')
+      return json({ ok: true })
+    }
+    if (method === 'POST' && id === 'resolve-all') {
+      const result = await env.DB.prepare("UPDATE alerts SET status = 'resolved', resolved_at = ?1 WHERE status = 'open'")
+        .bind(Date.now())
+        .run()
+      await audit(env, request, 'alert.resolve-all', '', `处理 ${result.meta?.changes || 0} 条告警`)
+      return json({ ok: true })
+    }
+  }
+
+  if (area === 'audit' && method === 'GET') {
+    const params = new URL(request.url).searchParams
+    const q = clean(params.get('q') || '', 40)
+    const limit = Math.min(300, Math.max(20, toInt(params.get('limit'), 100)))
+    const rows = q
+      ? await env.DB.prepare(
+          'SELECT * FROM audit_logs WHERE action LIKE ?1 OR target LIKE ?1 OR detail LIKE ?1 ORDER BY created_at DESC LIMIT ?2'
+        )
+          .bind(`%${q}%`, limit)
+          .all()
+      : await env.DB.prepare('SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT ?1').bind(limit).all()
+    return json({ ok: true, logs: rows.results || [] })
+  }
+
+  if (area === 'invites') {
+    if (method === 'GET' && !id) {
+      const rows = await env.DB.prepare('SELECT * FROM invite_codes ORDER BY created_at DESC LIMIT 200').all()
+      return json({ ok: true, invites: rows.results || [] })
+    }
+    if (method === 'POST' && !id) {
+      let body
+      try {
+        body = await readBody(request)
+      } catch (error) {
+        return fail(error.message)
+      }
+      const count = Math.min(50, Math.max(1, toInt(body.count, 1)))
+      const maxUses = Math.min(999, Math.max(1, toInt(body.maxUses, 1)))
+      const expiresAt = toInt(body.expiresAt, 0)
+      const note = clean(body.note, 100)
+      const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+      const now = Date.now()
+      const codes = []
+      for (let index = 0; index < count; index += 1) {
+        let code = ''
+        for (let attempt = 0; attempt < 5; attempt += 1) {
+          const bytes = crypto.getRandomValues(new Uint8Array(8))
+          code = `KAY-${Array.from(bytes, (byte) => alphabet[byte % alphabet.length]).join('').slice(0, 4)}-${Array.from(bytes, (byte) => alphabet[byte % alphabet.length]).join('').slice(4, 8)}`
+          const exists = await env.DB.prepare('SELECT id FROM invite_codes WHERE code = ?1').bind(code).first()
+          if (!exists) break
+          code = ''
+        }
+        if (!code) continue
+        const rowId = crypto.randomUUID()
+        await env.DB.prepare(
+          `INSERT INTO invite_codes (id, code, max_uses, used_count, enabled, note, expires_at, created_at)
+           VALUES (?1, ?2, ?3, 0, 1, ?4, ?5, ?6)`
+        )
+          .bind(rowId, code, maxUses, note, expiresAt, now)
+          .run()
+        codes.push(code)
+      }
+      await audit(env, request, 'invite.create', '', `生成 ${codes.length} 个邀请码，每个可用 ${maxUses} 次`)
+      return json({ ok: true, codes })
+    }
+    if ((method === 'PUT' || method === 'PATCH') && id) {
+      const row = await env.DB.prepare('SELECT * FROM invite_codes WHERE id = ?1').bind(id).first()
+      if (!row) return fail('邀请码不存在', 404)
+      let body
+      try {
+        body = await readBody(request)
+      } catch (error) {
+        return fail(error.message)
+      }
+      const enabled = body.enabled === undefined ? row.enabled : body.enabled ? 1 : 0
+      await env.DB.prepare('UPDATE invite_codes SET enabled = ?1, note = ?2 WHERE id = ?3')
+        .bind(enabled, body.note === undefined ? row.note : clean(body.note, 100), id)
+        .run()
+      await audit(env, request, 'invite.update', row.code, enabled ? '启用' : '停用')
+      return json({ ok: true })
+    }
+    if (method === 'DELETE' && id) {
+      const row = await env.DB.prepare('SELECT * FROM invite_codes WHERE id = ?1').bind(id).first()
+      if (!row) return fail('邀请码不存在', 404)
+      await env.DB.prepare('DELETE FROM invite_codes WHERE id = ?1').bind(id).run()
+      await audit(env, request, 'invite.delete', row.code, `已用 ${row.used_count}/${row.max_uses}`)
+      return json({ ok: true })
+    }
+  }
+
+  if (area === 'feedback') {
+    if (method === 'GET' && !id) {
+      const params = new URL(request.url).searchParams
+      const status = clean(params.get('status') || 'open', 12)
+      const rows =
+        status === 'all'
+          ? await env.DB.prepare('SELECT * FROM feedback ORDER BY created_at DESC LIMIT 200').all()
+          : await env.DB.prepare('SELECT * FROM feedback WHERE status = ?1 ORDER BY created_at DESC LIMIT 200')
+              .bind(status)
+              .all()
+      return json({ ok: true, feedback: rows.results || [] })
+    }
+    if ((method === 'PUT' || method === 'PATCH') && id) {
+      const row = await env.DB.prepare('SELECT * FROM feedback WHERE id = ?1').bind(id).first()
+      if (!row) return fail('反馈不存在', 404)
+      let body
+      try {
+        body = await readBody(request)
+      } catch (error) {
+        return fail(error.message)
+      }
+      const status = ['open', 'done', 'ignored'].includes(body.status) ? body.status : row.status
+      await env.DB.prepare('UPDATE feedback SET status = ?1, admin_note = ?2, updated_at = ?3 WHERE id = ?4')
+        .bind(status, body.adminNote === undefined ? row.admin_note : clean(body.adminNote, 300), Date.now(), id)
+        .run()
+      await audit(env, request, 'feedback.update', row.title, `标记为 ${status}`)
+      return json({ ok: true })
+    }
+    if (method === 'DELETE' && id) {
+      const row = await env.DB.prepare('SELECT * FROM feedback WHERE id = ?1').bind(id).first()
+      if (!row) return fail('反馈不存在', 404)
+      await env.DB.prepare('DELETE FROM feedback WHERE id = ?1').bind(id).run()
+      await audit(env, request, 'feedback.delete', row.title, row.username || '匿名')
+      return json({ ok: true })
+    }
+  }
+
   if (area === 'sources') {
     if (method === 'GET' && !id) {
-      const rows = await env.DB.prepare('SELECT * FROM sources ORDER BY kind, sort ASC, created_at DESC').all()
+      const weekAgo = Date.now() - 7 * 86400000
+      const rows = await env.DB.prepare(
+        `SELECT s.*,
+                (SELECT COUNT(*) FROM source_checks c WHERE c.source_id = s.id AND c.checked_at > ?1) AS checks_7d,
+                (SELECT COUNT(*) FROM source_checks c WHERE c.source_id = s.id AND c.ok = 1 AND c.checked_at > ?1) AS ok_7d,
+                (SELECT COUNT(*) FROM alerts a WHERE a.source_id = s.id AND a.status = 'open') AS open_alerts
+         FROM sources s ORDER BY s.kind, s.sort ASC, s.created_at DESC`
+      )
+        .bind(weekAgo)
+        .all()
       return json({ ok: true, sources: rows.results || [] })
     }
     if (method === 'POST' && !id) {
@@ -643,11 +1149,24 @@ async function handleAdmin(segments, request, env) {
       const now = Date.now()
       const rowId = crypto.randomUUID()
       await env.DB.prepare(
-        `INSERT INTO sources (id, kind, name, url, type, note, enabled, sort, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)`
+        `INSERT INTO sources (id, kind, name, url, type, note, enabled, sort, expires_at, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`
       )
-        .bind(rowId, kind, name, url, type, clean(body.note, 200), body.enabled === false ? 0 : 1, toInt(body.sort, 100), now, now)
+        .bind(
+          rowId,
+          kind,
+          name,
+          url,
+          type,
+          clean(body.note, 200),
+          body.enabled === false ? 0 : 1,
+          toInt(body.sort, 100),
+          toInt(body.expiresAt, 0),
+          now,
+          now
+        )
         .run()
+      await audit(env, request, 'source.create', name, `${kind} · ${url}`)
       return json({ ok: true, id: rowId })
     }
     if ((method === 'PUT' || method === 'PATCH') && id) {
@@ -666,31 +1185,45 @@ async function handleAdmin(segments, request, env) {
         type: body.type === undefined ? row.type : clean(body.type, 20),
         note: body.note === undefined ? row.note : clean(body.note, 200),
         enabled: body.enabled === undefined ? row.enabled : body.enabled ? 1 : 0,
-        sort: body.sort === undefined ? row.sort : toInt(body.sort, 100)
+        sort: body.sort === undefined ? row.sort : toInt(body.sort, 100),
+        expiresAt: body.expiresAt === undefined ? row.expires_at : toInt(body.expiresAt, 0)
       }
       if (!['vod', 'live', 'tvbox'].includes(next.kind)) return fail('源类型不合法')
       if (!next.name) return fail('请填写源名称')
       if (!isHttpUrl(next.url)) return fail('请填写 http(s) 开头的地址')
       await env.DB.prepare(
-        `UPDATE sources SET kind=?1, name=?2, url=?3, type=?4, note=?5, enabled=?6, sort=?7, updated_at=?8 WHERE id=?9`
+        `UPDATE sources SET kind=?1, name=?2, url=?3, type=?4, note=?5, enabled=?6, sort=?7, expires_at=?8, updated_at=?9 WHERE id=?10`
       )
-        .bind(next.kind, next.name, next.url, next.type, next.note, next.enabled, next.sort, Date.now(), id)
+        .bind(next.kind, next.name, next.url, next.type, next.note, next.enabled, next.sort, next.expiresAt, Date.now(), id)
         .run()
+      await audit(
+        env,
+        request,
+        'source.update',
+        next.name,
+        body.enabled !== undefined && next.enabled !== row.enabled ? (next.enabled ? '启用' : '停用') : `更新配置 ${next.url}`
+      )
+      if (body.expiresAt !== undefined) await resolveAlerts(env, 'source_expire', id)
       return json({ ok: true })
     }
     if (method === 'DELETE' && id) {
-      await env.DB.prepare('DELETE FROM sources WHERE id = ?1').bind(id).run()
+      const row = await env.DB.prepare('SELECT * FROM sources WHERE id = ?1').bind(id).first()
+      if (!row) return fail('源不存在', 404)
+      await env.DB.batch([
+        env.DB.prepare('DELETE FROM source_checks WHERE source_id = ?1').bind(id),
+        env.DB.prepare('DELETE FROM alerts WHERE source_id = ?1').bind(id),
+        env.DB.prepare('DELETE FROM sources WHERE id = ?1').bind(id)
+      ])
+      await audit(env, request, 'source.delete', row.name, row.url)
       return json({ ok: true })
     }
     if (method === 'POST' && id && segments[3] === 'probe') {
       const row = await env.DB.prepare('SELECT * FROM sources WHERE id = ?1').bind(id).first()
       if (!row) return fail('源不存在', 404)
       const result = await probeSource(row)
-      await env.DB.prepare(
-        'UPDATE sources SET probe_ok=?1, probe_ms=?2, probe_note=?3, probed_at=?4 WHERE id=?5'
-      )
-        .bind(result.ok ? 1 : 0, result.ms, result.note, Date.now(), id)
-        .run()
+      const settings = await getSettings(env)
+      await recordSourceCheck(env, row, result, 'manual', settings.failThreshold)
+      await audit(env, request, 'source.probe', row.name, result.ok ? `可用 ${result.ms}ms` : `失败：${result.note}`)
       return json({ ok: true, result })
     }
   }
@@ -728,6 +1261,7 @@ async function handleAdmin(segments, request, env) {
           now
         )
         .run()
+      await audit(env, request, 'announcement.create', title, '发布公告')
       return json({ ok: true, id: rowId })
     }
     if ((method === 'PUT' || method === 'PATCH') && id) {
@@ -756,10 +1290,14 @@ async function handleAdmin(segments, request, env) {
           id
         )
         .run()
+      await audit(env, request, 'announcement.update', title, body.active === undefined ? '更新公告' : body.active ? '启用公告' : '停用公告')
       return json({ ok: true })
     }
     if (method === 'DELETE' && id) {
+      const row = await env.DB.prepare('SELECT * FROM announcements WHERE id = ?1').bind(id).first()
+      if (!row) return fail('公告不存在', 404)
       await env.DB.prepare('DELETE FROM announcements WHERE id = ?1').bind(id).run()
+      await audit(env, request, 'announcement.delete', row.title, '删除公告')
       return json({ ok: true })
     }
   }
@@ -767,22 +1305,25 @@ async function handleAdmin(segments, request, env) {
   if (area === 'users') {
     if (method === 'GET' && !id) {
       const q = clean(new URL(request.url).searchParams.get('q') || '', 40)
+      const now = Date.now()
+      const baseSql =
+        `SELECT u.id, u.username, u.status, u.device, u.note, u.created_at, u.last_seen,
+                d.updated_at AS sync_at,
+                (SELECT COUNT(*) FROM sessions s WHERE s.user_id = u.id AND s.expires_at > ?1) AS session_count
+         FROM users u LEFT JOIN user_data d ON d.user_id = u.id`
       const rows = q
-        ? await env.DB.prepare(
-            `SELECT u.id, u.username, u.status, u.device, u.note, u.created_at, u.last_seen,
-                    d.updated_at AS sync_at
-             FROM users u LEFT JOIN user_data d ON d.user_id = u.id
-             WHERE u.username LIKE ?1 ORDER BY u.created_at DESC LIMIT 500`
-          )
-            .bind(`%${q}%`)
+        ? await env.DB.prepare(`${baseSql} WHERE u.username LIKE ?2 ORDER BY u.created_at DESC LIMIT 500`)
+            .bind(now, `%${q}%`)
             .all()
-        : await env.DB.prepare(
-            `SELECT u.id, u.username, u.status, u.device, u.note, u.created_at, u.last_seen,
-                    d.updated_at AS sync_at
-             FROM users u LEFT JOIN user_data d ON d.user_id = u.id
-             ORDER BY u.created_at DESC LIMIT 500`
-          ).all()
+        : await env.DB.prepare(`${baseSql} ORDER BY u.created_at DESC LIMIT 500`).bind(now).all()
       return json({ ok: true, users: rows.results || [] })
+    }
+    if (method === 'POST' && id && segments[3] === 'revoke-sessions') {
+      const row = await env.DB.prepare('SELECT * FROM users WHERE id = ?1').bind(id).first()
+      if (!row) return fail('用户不存在', 404)
+      const result = await env.DB.prepare('DELETE FROM sessions WHERE user_id = ?1').bind(id).run()
+      await audit(env, request, 'user.revoke-sessions', row.username, `强制下线 ${result.meta?.changes || 0} 个会话`)
+      return json({ ok: true, removed: result.meta?.changes || 0 })
     }
     if ((method === 'PUT' || method === 'PATCH') && id) {
       const row = await env.DB.prepare('SELECT * FROM users WHERE id = ?1').bind(id).first()
@@ -800,14 +1341,18 @@ async function handleAdmin(segments, request, env) {
       if (status !== 'active') {
         await env.DB.prepare('DELETE FROM sessions WHERE user_id = ?1').bind(id).run()
       }
+      await audit(env, request, 'user.status', row.username, `状态 ${row.status} → ${status}`)
       return json({ ok: true })
     }
     if (method === 'DELETE' && id) {
+      const row = await env.DB.prepare('SELECT * FROM users WHERE id = ?1').bind(id).first()
+      if (!row) return fail('用户不存在', 404)
       await env.DB.batch([
         env.DB.prepare('DELETE FROM sessions WHERE user_id = ?1').bind(id),
         env.DB.prepare('DELETE FROM user_data WHERE user_id = ?1').bind(id),
         env.DB.prepare('DELETE FROM users WHERE id = ?1').bind(id)
       ])
+      await audit(env, request, 'user.delete', row.username, '删除用户及其同步数据')
       return json({ ok: true })
     }
   }
@@ -823,8 +1368,29 @@ async function handleAdmin(segments, request, env) {
       }
       const updates = []
       if (body.siteName !== undefined) updates.push(['site_name', clean(body.siteName, 40) || 'KayTV'])
-      if (body.registrationOpen !== undefined) updates.push(['registration_open', body.registrationOpen ? '1' : '0'])
+      if (body.registrationMode !== undefined) {
+        const mode = ['open', 'invite', 'closed'].includes(body.registrationMode) ? body.registrationMode : 'open'
+        updates.push(['registration_mode', mode])
+        updates.push(['registration_open', mode === 'closed' ? '0' : '1'])
+      }
+      if (body.registrationOpen !== undefined && body.registrationMode === undefined) {
+        updates.push(['registration_open', body.registrationOpen ? '1' : '0'])
+        updates.push(['registration_mode', body.registrationOpen ? 'open' : 'closed'])
+      }
       if (body.autoApprove !== undefined) updates.push(['registration_auto_approve', body.autoApprove ? '1' : '0'])
+      if (body.minVersion !== undefined) {
+        const version = clean(body.minVersion, 20)
+        if (version && !/^\d+\.\d+\.\d+$/.test(version)) return fail('最低版本格式应为 0.5.0')
+        updates.push(['min_version', version])
+      }
+      if (body.updateUrl !== undefined) {
+        const url = clean(body.updateUrl, 300)
+        if (url && !isHttpUrl(url)) return fail('更新地址需要 http(s) 开头')
+        updates.push(['update_url', url])
+      }
+      if (body.failThreshold !== undefined) {
+        updates.push(['alert_fail_threshold', String(Math.min(5, Math.max(1, toInt(body.failThreshold, 2))))])
+      }
       for (const [key, value] of updates) {
         await env.DB.prepare(
           'INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
@@ -832,6 +1398,7 @@ async function handleAdmin(segments, request, env) {
           .bind(key, value)
           .run()
       }
+      await audit(env, request, 'settings.update', '', updates.map(([key, value]) => `${key}=${value}`).join(' '))
       return json({ ok: true, settings: await getSettings(env) })
     }
   }

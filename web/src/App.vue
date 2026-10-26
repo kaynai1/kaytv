@@ -22,6 +22,30 @@ const router = useRouter()
 
 const clock = ref('')
 let clockTimer = 0
+let cloudTimer = 0
+
+const appVersion = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : '0.0.0'
+function versionParts(value: string): number[] {
+  return String(value)
+    .split('.')
+    .map((part) => Number(part.replace(/\D.*$/, '')) || 0)
+}
+function compareVersion(left: string, right: string): number {
+  const a = versionParts(left)
+  const b = versionParts(right)
+  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+    const diff = (a[index] || 0) - (b[index] || 0)
+    if (diff !== 0) return diff
+  }
+  return 0
+}
+const forcedUpdate = computed(() => {
+  if (!cloud.online || !cloud.minVersion) return false
+  return compareVersion(appVersion, cloud.minVersion) < 0
+})
+const forcedUpdateUrl = computed(
+  () => cloud.updateUrl || 'https://github.com/kaynai1/kaytv/releases/latest'
+)
 
 /* Netflix 导航：只在首页顶部悬浮透明，其余情况或滚动后转实心 */
 const scrolled = ref(false)
@@ -124,6 +148,9 @@ useSpatialNav()
 onMounted(async () => {
   updateClock()
   clockTimer = window.setInterval(updateClock, 15000)
+  cloudTimer = window.setInterval(() => {
+    if (cloud.configured) void cloud.sync({ silent: true })
+  }, 30 * 60 * 1000)
   window.addEventListener('keydown', onKeydown)
   window.addEventListener('scroll', onScroll, { passive: true })
   onScroll()
@@ -142,6 +169,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   window.clearInterval(clockTimer)
+  window.clearInterval(cloudTimer)
   window.removeEventListener('keydown', onKeydown)
   window.removeEventListener('scroll', onScroll)
 })
@@ -193,6 +221,9 @@ onBeforeUnmount(() => {
         </RouterLink>
         <span v-if="!isAdmin && !isAuthPage" class="clock">{{ clock }}</span>
         <template v-if="!isAdmin && !isAuthPage">
+          <RouterLink class="header-icon-btn" to="/feedback" data-nav title="求片与反馈">
+            <AppIcon name="message" :size="17" />
+          </RouterLink>
           <RouterLink class="header-icon-btn" to="/search" data-nav title="聚合搜索">
             <AppIcon name="search" :size="17" />
           </RouterLink>
@@ -241,6 +272,23 @@ onBeforeUnmount(() => {
 
     <PlayerView />
     <ToastHost />
+
+    <div v-if="forcedUpdate" class="force-update">
+      <div class="force-card">
+        <span class="force-icon"><AppIcon name="warn" :size="26" /></span>
+        <h2>需要更新后才能继续使用</h2>
+        <p>
+          当前版本 v{{ appVersion }}，云后台要求至少 v{{ cloud.minVersion }}。
+          更新后收藏与观看进度会保留，不会丢失。
+        </p>
+        <div class="force-actions">
+          <a class="btn primary" :href="forcedUpdateUrl" target="_blank" rel="noopener" data-nav>
+            去下载新版
+          </a>
+          <button class="btn ghost" data-nav type="button" @click="cloud.sync()">重新检查</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -315,6 +363,51 @@ onBeforeUnmount(() => {
   background: none;
   color: var(--muted);
   cursor: pointer;
+}
+
+.force-update {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(5, 6, 9, 0.86);
+  backdrop-filter: blur(14px);
+}
+.force-card {
+  width: min(460px, 100%);
+  padding: 30px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  background: #14171d;
+  text-align: center;
+}
+.force-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  margin-bottom: 14px;
+  border-radius: 50%;
+  background: rgba(229, 9, 20, 0.14);
+  color: var(--accent);
+}
+.force-card h2 {
+  margin: 0 0 10px;
+  font-size: 21px;
+}
+.force-card p {
+  margin: 0 0 20px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.8;
+}
+.force-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
 }
 
 @media (max-width: 720px) {

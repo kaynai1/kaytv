@@ -49,7 +49,9 @@ const icons: Record<string, string> = {
     '<circle cx="5" cy="12" r="1.7" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.7" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.7" fill="currentColor" stroke="none"/>',
   gauge: '<path d="M4 18a9 9 0 1 1 16 0"/><path d="M12 14.5 15.8 9.6"/><circle cx="12" cy="16" r="1.4" fill="currentColor" stroke="none"/>',
   up: '<path d="M6 15l6-6 6 6"/>',
-  link: '<path d="M10.5 13.5a4.5 4.5 0 0 0 6.4 0l2.1-2.1a4.5 4.5 0 0 0-6.4-6.4l-1 1"/><path d="M13.5 10.5a4.5 4.5 0 0 0-6.4 0L5 12.6a4.5 4.5 0 0 0 6.4 6.4l1-1"/>'
+  link: '<path d="M10.5 13.5a4.5 4.5 0 0 0 6.4 0l2.1-2.1a4.5 4.5 0 0 0-6.4-6.4l-1 1"/><path d="M13.5 10.5a4.5 4.5 0 0 0-6.4 0L5 12.6a4.5 4.5 0 0 0 6.4 6.4l1-1"/>',
+  message:
+    '<path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5H7l-4 2 1.2-4.2A8.5 8.5 0 1 1 21 11.5z"/><path d="M8.5 11.5h7M8.5 8.5h4.5"/>'
 }
 </script>
 

@@ -44,6 +44,9 @@ const cloudAccountOpen = ref(false)
 const cloudAuthing = ref(false)
 const cloudUsername = ref('')
 const cloudPassword = ref('')
+const cloudInviteCode = ref('')
+const cloudSessionsOpen = ref(false)
+const cloudSessionsLoading = ref(false)
 
 const cloudHost = computed(() => {
   try {
@@ -112,10 +115,15 @@ async function cloudRegister() {
     toast.info('用户名必填，密码至少 6 位')
     return
   }
+  if (cloud.registrationMode === 'invite' && !cloudInviteCode.value.trim()) {
+    toast.info('这个云后台需要邀请码才能注册')
+    return
+  }
   cloudAuthing.value = true
   try {
-    const result = await cloud.register(username, cloudPassword.value)
+    const result = await cloud.register(username, cloudPassword.value, cloudInviteCode.value.trim())
     cloudPassword.value = ''
+    cloudInviteCode.value = ''
     if (result.pending) {
       toast.info(result.message)
     } else {
@@ -135,6 +143,45 @@ async function cloudSyncData() {
     toast.success('收藏和观看进度已与云端对齐')
   } catch (error) {
     toast.error(error instanceof Error ? error.message : '同步失败')
+  }
+}
+
+async function toggleCloudSessions() {
+  cloudSessionsOpen.value = !cloudSessionsOpen.value
+  if (!cloudSessionsOpen.value) return
+  cloudSessionsLoading.value = true
+  try {
+    await cloud.loadSessions()
+  } catch (error) {
+    toast.error(error instanceof Error ? error.message : '读取登录设备失败')
+  } finally {
+    cloudSessionsLoading.value = false
+  }
+}
+
+async function revokeCloudSession(id: string, current: boolean) {
+  if (current) {
+    if (!window.confirm('这是当前设备，下线后需要重新登录，确定继续？')) return
+  }
+  try {
+    const self = await cloud.revokeSession(id)
+    toast.success(self ? '当前设备已退出云端账号' : '设备已下线')
+    if (self) {
+      cloudSessionsOpen.value = false
+      cloudAccountOpen.value = false
+    }
+  } catch (error) {
+    toast.error(error instanceof Error ? error.message : '下线失败')
+  }
+}
+
+async function revokeOtherDevices() {
+  if (!window.confirm('让除当前设备外的所有设备退出云端账号？')) return
+  try {
+    await cloud.revokeOtherSessions()
+    toast.success('其他设备已全部下线')
+  } catch (error) {
+    toast.error(error instanceof Error ? error.message : '操作失败')
   }
 }
 
@@ -546,7 +593,7 @@ onMounted(async () => {
               inputmode="url"
               autocomplete="off"
               spellcheck="false"
-              placeholder="https://kaytv-hub.pages.dev"
+              placeholder="https://tv.9ky.us.ci"
             />
             <button class="btn primary" data-nav type="button" :disabled="cloudSaving" @click="saveCloud">
               {{ cloudSaving ? '同步中…' : '保存并同步' }}
@@ -578,6 +625,10 @@ onMounted(async () => {
               <AppIcon name="refresh" :size="16" />
               {{ cloud.syncingData ? '对齐中…' : '对齐收藏与进度' }}
             </button>
+            <button class="btn" data-nav type="button" @click="toggleCloudSessions">
+              <AppIcon name="users" :size="16" />
+              {{ cloudSessionsOpen ? '收起登录设备' : '登录设备' }}
+            </button>
             <button class="btn ghost" data-nav type="button" @click="cloudLogout">退出云端账号</button>
           </template>
         </div>
@@ -602,6 +653,15 @@ onMounted(async () => {
             autocomplete="current-password"
             placeholder="密码（至少 6 位）"
           />
+          <input
+            v-if="cloud.registrationMode === 'invite'"
+            v-model="cloudInviteCode"
+            class="input"
+            type="text"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="邀请码（KAY-XXXX-XXXX）"
+          />
           <button class="btn primary" data-nav type="button" :disabled="cloudAuthing" @click="cloudLogin">
             {{ cloudAuthing ? '处理中…' : '登录' }}
           </button>
@@ -622,6 +682,37 @@ onMounted(async () => {
         <p v-else-if="!cloud.registrationOpen && cloudAccountOpen" class="hint">
           云后台当前关闭了注册，需要让管理员在「用户」里手动开通。
         </p>
+        <p v-else-if="cloud.registrationMode === 'invite' && cloudAccountOpen" class="hint">
+          云后台开启了邀请码注册：登录不受影响，新注册需要管理员提供的邀请码。
+        </p>
+
+        <div v-if="cloud.account && cloudSessionsOpen" class="cloud-sessions">
+          <div class="cloud-sessions-head">
+            <strong>登录设备</strong>
+            <button class="btn sm ghost" data-nav type="button" @click="revokeOtherDevices">
+              下线其他设备
+            </button>
+          </div>
+          <p v-if="cloudSessionsLoading" class="hint">读取中…</p>
+          <ul v-else class="session-list">
+            <li v-for="session in cloud.sessions" :key="session.id" class="session-item">
+              <div>
+                <span class="session-device">
+                  {{ session.device || '未知设备' }}
+                  <span v-if="session.current" class="cloud-src-tag">当前设备</span>
+                </span>
+                <span class="session-meta">
+                  最近活跃 {{ new Date(session.lastSeen).toLocaleString('zh-CN', { hour12: false }) }}
+                  <template v-if="session.ip"> · {{ session.ip }}</template>
+                </span>
+              </div>
+              <button class="btn sm ghost" data-nav type="button" @click="revokeCloudSession(session.id, session.current)">
+                下线
+              </button>
+            </li>
+            <li v-if="!cloud.sessions.length" class="session-item">没有有效的登录设备。</li>
+          </ul>
+        </div>
       </section>
 
       <section class="panel">
@@ -1440,10 +1531,61 @@ a.btn {
   font-weight: 600;
 }
 .cloud-auth {
-  display: grid;
-  grid-template-columns: 1fr 1fr auto auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 10px;
   margin-top: 14px;
+}
+.cloud-auth .input {
+  flex: 1 1 180px;
+}
+.cloud-sessions {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.18);
+}
+.cloud-sessions-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+.session-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.session-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 12.5px;
+}
+.session-item:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+.session-device {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.session-meta {
+  display: block;
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--muted);
 }
 .cloud-error {
   margin: 10px 0 0;
@@ -1472,9 +1614,6 @@ a.btn {
   }
   .server-row {
     flex-direction: column;
-  }
-  .cloud-auth {
-    grid-template-columns: 1fr 1fr;
   }
   .import-row {
     grid-template-columns: 1fr;

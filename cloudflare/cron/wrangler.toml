@@ -1,0 +1,12 @@
+name = "kaytv-hub-cron"
+main = "worker.js"
+compatibility_date = "2026-01-01"
+
+[vars]
+HUB_URL = "https://tv.9ky.us.ci"
+
+[triggers]
+crons = ["*/30 * * * *"]
+
+# 密钥单独设置，不要写进仓库：
+# npx wrangler secret put CRON_TOKEN

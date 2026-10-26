@@ -29,6 +29,9 @@
           <button class="tab" data-tab="sources">源管理</button>
           <button class="tab" data-tab="announcements">公告</button>
           <button class="tab" data-tab="users">用户</button>
+          <button class="tab" data-tab="invites">邀请码</button>
+          <button class="tab" data-tab="feedback">反馈</button>
+          <button class="tab" data-tab="audit">审计</button>
           <button class="tab" data-tab="settings">设置</button>
         </nav>
         <div class="top-actions">
@@ -63,6 +66,20 @@
               <h3>建议开启</h3>
               <p>先填 2-3 个稳定影视源并点「检测」；用户注册可以设置成需要审核；公告支持定时上下线。</p>
             </div>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <h2>源体检与告警</h2>
+              <div class="inline">
+                <span id="sweep-status" class="muted small"></span>
+                <button id="sweep-run" class="btn sm primary" type="button">立即体检</button>
+                <button id="alerts-resolve" class="btn sm" type="button">全部标记已处理</button>
+              </div>
+            </div>
+            <p class="muted small">
+              定时任务分批检测启用的源，连续失败或有效期临近会在这里生成告警；处理完可手动关闭。
+            </p>
+            <div id="alert-list" class="list"></div>
           </div>
           <div class="card">
             <div class="card-head">
@@ -104,6 +121,9 @@
               </label>
               <label>排序（越小越前）
                 <input id="source-sort" class="input" type="number" value="100" />
+              </label>
+              <label>有效期（可选）
+                <input id="source-expires" class="input" type="datetime-local" />
               </label>
               <label class="wide">备注
                 <input id="source-note" class="input" maxlength="200" placeholder="给客户端看的说明，可留空" />
@@ -217,6 +237,86 @@
           </div>
         </section>
 
+        <section id="panel-invites" class="panel-page hidden">
+          <div class="page-head">
+            <div>
+              <h1>邀请码</h1>
+              <p class="muted">注册模式选「邀请码」时，用户必须带有效邀请码才能注册。可设置使用次数和过期时间。</p>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h2>生成邀请码</h2></div>
+            <form id="invite-form" class="form-grid">
+              <label>数量
+                <input id="invite-count" class="input" type="number" min="1" max="50" value="1" />
+              </label>
+              <label>每个可用次数
+                <input id="invite-uses" class="input" type="number" min="1" max="999" value="1" />
+              </label>
+              <label>过期时间（可选）
+                <input id="invite-expires" class="input" type="datetime-local" />
+              </label>
+              <label>备注
+                <input id="invite-note" class="input" maxlength="100" placeholder="例如：QQ 群第一批" />
+              </label>
+              <div class="form-actions">
+                <button class="btn primary" type="submit">生成</button>
+              </div>
+            </form>
+            <p id="invite-result" class="muted small"></p>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <h2>全部邀请码</h2>
+              <button id="invite-refresh" class="btn ghost sm" type="button">刷新</button>
+            </div>
+            <div id="invite-list" class="list"></div>
+          </div>
+        </section>
+
+        <section id="panel-feedback" class="panel-page hidden">
+          <div class="page-head">
+            <div>
+              <h1>求片与反馈</h1>
+              <p class="muted">三端用户提交的求片、问题和建议都在这里，处理后标记完成或忽略。</p>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <h2>用户反馈</h2>
+              <div class="inline">
+                <select id="feedback-filter" class="input compact">
+                  <option value="open">待处理</option>
+                  <option value="done">已完成</option>
+                  <option value="ignored">已忽略</option>
+                  <option value="all">全部</option>
+                </select>
+                <button id="feedback-refresh" class="btn ghost sm" type="button">刷新</button>
+              </div>
+            </div>
+            <div id="feedback-list" class="list"></div>
+          </div>
+        </section>
+
+        <section id="panel-audit" class="panel-page hidden">
+          <div class="page-head">
+            <div>
+              <h1>操作审计</h1>
+              <p class="muted">管理员和定时任务的关键操作都会留痕：源、公告、用户、设置、邀请码、告警处理。</p>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <h2>最近操作</h2>
+              <div class="inline">
+                <input id="audit-search" class="input compact" placeholder="搜索动作或对象" />
+                <button id="audit-refresh" class="btn ghost sm" type="button">查询</button>
+              </div>
+            </div>
+            <div id="audit-list" class="list"></div>
+          </div>
+        </section>
+
         <section id="panel-settings" class="panel-page hidden">
           <div class="page-head">
             <div>
@@ -229,13 +329,31 @@
               <label class="wide">站点名称
                 <input id="set-site-name" class="input" maxlength="40" placeholder="KayTV" />
               </label>
-              <label class="check"><input id="set-reg-open" type="checkbox" /> 开放注册（关闭后客户端注册会提示未开放）</label>
-              <label class="check"><input id="set-auto-approve" type="checkbox" /> 注册后自动通过（关闭则需要在「用户」里审核）</label>
+              <label>注册方式
+                <select id="set-reg-mode" class="input">
+                  <option value="open">开放注册</option>
+                  <option value="invite">需要邀请码</option>
+                  <option value="closed">关闭注册</option>
+                </select>
+              </label>
+              <label>连续失败几次告警
+                <input id="set-fail-threshold" class="input" type="number" min="1" max="5" value="2" />
+              </label>
+              <label class="check wide"><input id="set-auto-approve" type="checkbox" /> 注册后自动通过（关闭则需要在「用户」里审核）</label>
+              <label>最低客户端版本
+                <input id="set-min-version" class="input" placeholder="例如 0.5.0，留空不强制" />
+              </label>
+              <label>更新下载地址
+                <input id="set-update-url" class="input" placeholder="https://github.com/kayn.../releases/latest" />
+              </label>
               <div class="form-actions">
                 <button class="btn primary" type="submit">保存设置</button>
               </div>
             </form>
             <p id="settings-result" class="muted small"></p>
+            <p class="muted small">
+              最低版本：低于该版本的三端会弹出强制更新提示并锁定播放，填 0.5.0 表示 0.5.0 以下必须更新。留空则不强制。
+            </p>
           </div>
           <div class="card">
             <h2>安全提示</h2>

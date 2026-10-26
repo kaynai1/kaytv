@@ -9,7 +9,8 @@ import { useSettingsStore } from './settings'
 const STORE_KEY = 'kaytv.cloud.v1'
 const BUILD_URL = normalizeServerUrl(String(import.meta.env.VITE_CLOUD_URL || ''))
 /** 正式云后台；换自己的部署时在设置里填地址，或用 VITE_CLOUD_URL 覆盖 */
-const DEFAULT_URL = BUILD_URL || 'https://kaytv-hub.pages.dev'
+const DEFAULT_URL = BUILD_URL || 'https://tv.9ky.us.ci'
+const LEGACY_URL = 'https://kaytv-hub.pages.dev'
 const REQUEST_TIMEOUT = 12000
 const PUSH_DELAY = 4000
 
@@ -36,9 +37,32 @@ interface CloudRawSource {
 interface CloudConfig {
   ok?: boolean
   siteName?: string
-  registration?: { open?: boolean; autoApprove?: boolean }
+  registration?: { open?: boolean; mode?: 'open' | 'invite' | 'closed'; autoApprove?: boolean }
+  minVersion?: string
+  updateUrl?: string
   announcement?: CloudAnnouncement | null
   sources?: CloudRawSource[]
+}
+
+export interface CloudSession {
+  id: string
+  device: string
+  ip?: string
+  ua?: string
+  createdAt: number
+  lastSeen: number
+  current: boolean
+}
+
+export interface CloudFeedback {
+  id: string
+  kind: string
+  title: string
+  body: string
+  status: string
+  adminNote?: string
+  createdAt: number
+  updatedAt?: number
 }
 
 export interface CloudAccount {
@@ -96,8 +120,9 @@ function load(): Persisted {
     const raw = localStorage.getItem(STORE_KEY)
     if (!raw) return fallback
     const parsed = JSON.parse(raw) as Partial<Persisted>
+    const savedUrl = typeof parsed.customUrl === 'string' ? parsed.customUrl : ''
     return {
-      customUrl: typeof parsed.customUrl === 'string' ? parsed.customUrl : '',
+      customUrl: normalizeServerUrl(savedUrl) === LEGACY_URL ? '' : savedUrl,
       token: typeof parsed.token === 'string' ? parsed.token : '',
       account: parsed.account && typeof parsed.account === 'object' ? parsed.account : null,
       tvbox: parsed.tvbox && typeof parsed.tvbox === 'object' ? parsed.tvbox : {},
@@ -176,12 +201,18 @@ export const useCloudStore = defineStore('cloud', {
       announcement: null as CloudAnnouncement | null,
       sources: [] as CloudRawSource[],
       registrationOpen: true,
+      registrationMode: 'open' as 'open' | 'invite' | 'closed',
       autoApprove: true,
+      minVersion: '',
+      updateUrl: '',
       online: false,
       checked: false,
       loading: false,
       syncing: false,
       syncingData: false,
+      sessions: [] as CloudSession[],
+      sessionsLoading: false,
+      myFeedback: [] as CloudFeedback[],
       error: '',
       sourceCount: 0,
       tvboxCount: 0,
@@ -248,7 +279,15 @@ export const useCloudStore = defineStore('cloud', {
         this.error = ''
         this.siteName = String(config.siteName || 'KayTV')
         this.registrationOpen = config.registration?.open !== false
+        this.registrationMode =
+          config.registration?.mode === 'invite' || config.registration?.mode === 'closed'
+            ? config.registration.mode
+            : config.registration?.open === false
+              ? 'closed'
+              : 'open'
         this.autoApprove = config.registration?.autoApprove !== false
+        this.minVersion = String(config.minVersion || '')
+        this.updateUrl = String(config.updateUrl || '')
         this.announcement = config.announcement || null
         this.sources = Array.isArray(config.sources) ? config.sources : []
         const settings = useSettingsStore()
@@ -339,7 +378,11 @@ export const useCloudStore = defineStore('cloud', {
       this.dismissed = `${this.announcement.id}:${this.announcement.updatedAt || 0}`
       this.persist()
     },
-    async register(username: string, password: string): Promise<{ pending: boolean; message: string }> {
+    async register(
+      username: string,
+      password: string,
+      inviteCode = ''
+    ): Promise<{ pending: boolean; message: string }> {
       this.loading = true
       try {
         const data = await cloudRequest<{
@@ -350,7 +393,7 @@ export const useCloudStore = defineStore('cloud', {
           user?: CloudAccount
         }>(this.endpoint, '/api/register', {
           method: 'POST',
-          body: { username, password, device: deviceLabel() }
+          body: { username, password, inviteCode, device: deviceLabel() }
         })
         if (data.pending) {
           this.persist()
@@ -372,7 +415,7 @@ export const useCloudStore = defineStore('cloud', {
         const data = await cloudRequest<{ ok: boolean; token?: string; user?: CloudAccount }>(
           this.endpoint,
           '/api/login',
-          { method: 'POST', body: { username, password } }
+          { method: 'POST', body: { username, password, device: deviceLabel() } }
         )
         if (!data.token || !data.user) throw new CloudError('云端没有返回登录信息')
         this.token = data.token
@@ -396,7 +439,69 @@ export const useCloudStore = defineStore('cloud', {
       window.clearTimeout(pushTimer)
       this.token = ''
       this.account = null
+      this.sessions = []
+      this.myFeedback = []
       this.persist()
+    },
+    async loadSessions() {
+      if (!this.token) return []
+      this.sessionsLoading = true
+      try {
+        const data = await cloudRequest<{ ok: boolean; sessions?: CloudSession[] }>(
+          this.endpoint,
+          '/api/sessions',
+          { token: this.token }
+        )
+        this.sessions = data.sessions || []
+        return this.sessions
+      } finally {
+        this.sessionsLoading = false
+      }
+    },
+    async revokeSession(id: string) {
+      if (!this.token) throw new CloudError('请先登录云端账号')
+      const data = await cloudRequest<{ ok: boolean; self?: boolean }>(this.endpoint, '/api/sessions/revoke', {
+        method: 'POST',
+        token: this.token,
+        body: { id }
+      })
+      if (data.self) {
+        this.token = ''
+        this.account = null
+        this.persist()
+      }
+      await this.loadSessions()
+      return Boolean(data.self)
+    },
+    async revokeOtherSessions() {
+      if (!this.token) throw new CloudError('请先登录云端账号')
+      await cloudRequest(this.endpoint, '/api/sessions/revoke-others', { method: 'POST', token: this.token })
+      await this.loadSessions()
+    },
+    async submitFeedback(payload: { kind: string; title: string; body: string; contact?: string }) {
+      const data = await cloudRequest<{ ok: boolean; id?: string; message?: string }>(
+        this.endpoint,
+        '/api/feedback',
+        {
+          method: 'POST',
+          token: this.token || undefined,
+          body: { ...payload, device: deviceLabel() }
+        }
+      )
+      return data.message || '已收到，管理员会尽快处理'
+    },
+    async loadMyFeedback() {
+      if (!this.token) {
+        this.myFeedback = []
+        return []
+      }
+      const data = await cloudRequest<{ ok: boolean; feedback?: CloudFeedback[] }>(
+        this.endpoint,
+        '/api/feedback',
+        { token: this.token }
+      )
+      this.myFeedback = data.feedback || []
+      return this.myFeedback
     },
     async restoreAccount() {
       if (!this.token) return

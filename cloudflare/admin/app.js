@@ -10,6 +10,10 @@ let state = {
   sources: [],
   announcements: [],
   users: [],
+  alerts: [],
+  invites: [],
+  feedback: [],
+  audit: [],
   settings: null,
   editingSource: '',
   editingAnnouncement: ''
@@ -112,18 +116,26 @@ function logout() {
 
 async function loadAll() {
   try {
-    const [overview, sources, announcements, users, settings] = await Promise.all([
+    const [overview, sources, announcements, users, settings, alerts, invites, feedback, audit] = await Promise.all([
       api('/admin/overview'),
       api('/admin/sources'),
       api('/admin/announcements'),
       api('/admin/users'),
-      api('/admin/settings')
+      api('/admin/settings'),
+      api('/admin/alerts'),
+      api('/admin/invites'),
+      api(`/admin/feedback?status=${el('feedback-filter')?.value || 'open'}`),
+      api('/admin/audit?limit=80')
     ])
     state.overview = overview
     state.sources = sources.sources || []
     state.announcements = announcements.announcements || []
     state.users = users.users || []
     state.settings = settings.settings || null
+    state.alerts = alerts.alerts || []
+    state.invites = invites.invites || []
+    state.feedback = feedback.feedback || []
+    state.audit = audit.logs || []
     renderAll()
   } catch (error) {
     toast(error.message, true)
@@ -135,6 +147,9 @@ function renderAll() {
   renderSources()
   renderAnnouncements()
   renderUsers()
+  renderInvites()
+  renderFeedback()
+  renderAudit()
   renderSettings()
 }
 
@@ -147,15 +162,23 @@ function renderOverview() {
     { label: '直播源', value: overview.sources.live || 0 },
     { label: 'TVBox 配置', value: overview.sources.tvbox || 0 },
     { label: '云账号', value: overview.users.active || 0 },
-    { label: '待审核', value: overview.users.pending || 0, hot: overview.users.pending > 0 }
+    { label: '在线设备', value: overview.activeSessions || 0 },
+    { label: '待审核', value: overview.users.pending || 0, hot: overview.users.pending > 0 },
+    { label: '待处理告警', value: overview.openAlerts || 0, hot: overview.openAlerts > 0 },
+    { label: '待处理反馈', value: overview.openFeedback || 0, hot: overview.openFeedback > 0 },
+    { label: '可用邀请码', value: overview.activeInvites || 0 },
+    { label: '上次体检', value: overview.lastCheckAt ? fmtTime(overview.lastCheckAt, '—') : '未体检', small: true }
   ]
   el('overview-cards').innerHTML = cards
     .map(
       (card) => `<div class="stat${card.hot ? ' hot' : ''}">
-        <b>${card.value}</b><span>${card.label}</span>
+        <b${card.small ? ' class="small-stat"' : ''}>${card.value}</b><span>${card.label}</span>
       </div>`
     )
     .join('')
+  el('sweep-status').textContent = overview.lastCheckAt ? `上次体检 ${fmtTime(overview.lastCheckAt)}` : '还没有体检记录'
+
+  renderAlerts()
 
   const recent = state.users.slice(0, 6)
   el('recent-users').innerHTML = recent.length
@@ -174,12 +197,49 @@ function renderOverview() {
     : '<div class="empty">还没有用户注册。三端不登录也能正常看片，注册只用于收藏和进度云同步。</div>'
 }
 
+function renderAlerts() {
+  const rows = state.alerts || []
+  el('alert-list').innerHTML = rows.length
+    ? rows
+        .map(
+          (row) => `<div class="row">
+            <div class="row-main">
+              <div class="row-title">
+                ${esc(row.title)}
+                <span class="tag ${row.level === 'critical' ? 'bad' : row.level === 'warning' ? 'warn' : ''}">${row.level === 'critical' ? '严重' : row.level === 'warning' ? '提醒' : '提示'}</span>
+                <span class="tag">${row.kind === 'source_fail' ? '体检失败' : row.kind === 'source_expire' ? '有效期' : esc(row.kind)}</span>
+              </div>
+              <div class="row-sub">${esc(row.body || '')}</div>
+              <div class="row-sub">${fmtTime(row.created_at)}${row.source_id ? ' · 源 ' + esc(row.source_id.slice(0, 8)) : ''}</div>
+            </div>
+            <div class="row-side">
+              <button class="btn sm" data-action="alert-resolve" data-id="${row.id}" type="button">标记已处理</button>
+            </div>
+          </div>`
+        )
+        .join('')
+    : '<div class="empty">没有待处理告警，源的体检结果正常。</div>'
+}
+
 /* ---------- 源管理 ---------- */
+function expiryTag(expiresAt) {
+  if (!expiresAt) return ''
+  const days = Math.ceil((Number(expiresAt) - Date.now()) / 86400000)
+  if (days < 0) return '<span class="tag bad">已过期</span>'
+  if (days <= 3) return `<span class="tag warn">${Math.max(1, days)} 天后到期</span>`
+  return `<span class="tag">有效期至 ${new Date(Number(expiresAt)).toLocaleDateString('zh-CN')}</span>`
+}
+
 function sourceRow(row) {
   const probe =
     row.probed_at > 0
       ? `<span class="tag ${row.probe_ok ? 'ok' : 'bad'}" title="${esc(row.probe_note || '')}">${row.probe_ok ? '可用' : '不可用'} · ${row.probe_ms || 0}ms</span>`
       : '<span class="tag">未检测</span>'
+  const checks = Number(row.checks_7d) || 0
+  const health = checks
+    ? `<span class="tag ${row.ok_7d / checks >= 0.8 ? 'ok' : row.ok_7d / checks >= 0.5 ? 'warn' : 'bad'}">7天 ${row.ok_7d || 0}/${checks} 可用</span>`
+    : ''
+  const alerts = Number(row.open_alerts) > 0 ? `<span class="tag bad">${row.open_alerts} 条告警</span>` : ''
   return `<div class="row">
     <div class="row-main">
       <div class="row-title">
@@ -187,6 +247,9 @@ function sourceRow(row) {
         <span class="tag ${row.kind === 'vod' ? 'accent' : ''}">${KIND_LABEL[row.kind] || row.kind}</span>
         ${row.enabled ? '' : '<span class="tag off">已停用</span>'}
         ${probe}
+        ${health}
+        ${expiryTag(row.expires_at)}
+        ${alerts}
       </div>
       <div class="row-sub">${esc(row.url)}</div>
       <div class="row-sub">${row.note ? esc(row.note) + ' · ' : ''}排序 ${row.sort} · 更新 ${fmtTime(row.updated_at)}${row.probed_at ? ' · 检测 ' + fmtTime(row.probed_at) : ''}</div>
@@ -217,6 +280,7 @@ function resetSourceForm() {
   el('source-url').value = ''
   el('source-type').value = ''
   el('source-sort').value = '100'
+  el('source-expires').value = ''
   el('source-note').value = ''
   el('source-enabled').checked = true
   el('source-error').textContent = ''
@@ -233,6 +297,7 @@ function editSource(id) {
   el('source-url').value = row.url
   el('source-type').value = row.type || ''
   el('source-sort').value = String(row.sort ?? 100)
+  el('source-expires').value = fmtDateInput(row.expires_at)
   el('source-note').value = row.note || ''
   el('source-enabled').checked = Boolean(row.enabled)
   el('source-error').textContent = ''
@@ -247,6 +312,7 @@ async function submitSource(event) {
     url: el('source-url').value.trim(),
     type: el('source-type').value.trim(),
     sort: Number(el('source-sort').value) || 100,
+    expiresAt: el('source-expires').value ? new Date(el('source-expires').value).getTime() : 0,
     note: el('source-note').value.trim(),
     enabled: el('source-enabled').checked
   }
@@ -461,10 +527,15 @@ function userRow(row) {
     actions.push(`<button class="btn sm" data-action="user-status" data-id="${row.id}" data-status="active" type="button">恢复</button>`)
   }
   actions.push(`<button class="btn sm danger" data-action="user-delete" data-id="${row.id}" type="button">删除</button>`)
+  const sessions = Number(row.session_count) || 0
+  if (sessions > 0) {
+    actions.unshift(`<button class="btn sm" data-action="user-revoke" data-id="${row.id}" type="button">下线设备 ${sessions}</button>`)
+  }
   return `<div class="row">
     <div class="row-main">
       <div class="row-title">${esc(row.username)}
         <span class="tag ${row.status === 'active' ? 'ok' : row.status === 'pending' ? 'warn' : 'bad'}">${STATUS_LABEL[row.status] || row.status}</span>
+        ${sessions > 0 ? `<span class="tag ok">${sessions} 台在线</span>` : ''}
       </div>
       <div class="row-sub">注册 ${fmtTime(row.created_at)} · 最近登录 ${fmtTime(row.last_seen, '从未')}${row.device ? ' · ' + esc(row.device) : ''}</div>
       <div class="row-sub">云同步 ${row.sync_at ? fmtTime(row.sync_at) : '还没同步过'}${row.note ? ' · 备注：' + esc(row.note) : ''}</div>
@@ -514,12 +585,265 @@ async function deleteUser(id) {
   }
 }
 
+async function revokeUserSessions(id) {
+  const row = state.users.find((item) => item.id === id)
+  if (!row || !window.confirm(`让「${row.username}」在所有设备上退出登录？`)) return
+  try {
+    const data = await api(`/admin/users/${id}/revoke-sessions`, { method: 'POST' })
+    toast(`已下线 ${data.removed || 0} 个会话`)
+    await loadAll()
+  } catch (error) {
+    toast(error.message, true)
+  }
+}
+
+/* ---------- 邀请码 ---------- */
+function inviteRow(row) {
+  const expired = row.expires_at && row.expires_at < Date.now()
+  const usedUp = row.used_count >= row.max_uses
+  const stateTag = !row.enabled
+    ? '<span class="tag off">已停用</span>'
+    : expired
+      ? '<span class="tag bad">已过期</span>'
+      : usedUp
+        ? '<span class="tag warn">已用完</span>'
+        : '<span class="tag ok">可用</span>'
+  return `<div class="row">
+    <div class="row-main">
+      <div class="row-title"><code>${esc(row.code)}</code> ${stateTag}</div>
+      <div class="row-sub">已用 ${row.used_count}/${row.max_uses} 次${row.expires_at ? ' · 到期 ' + fmtTime(row.expires_at) : ' · 长期有效'}${row.note ? ' · ' + esc(row.note) : ''}</div>
+      <div class="row-sub">创建 ${fmtTime(row.created_at)}</div>
+    </div>
+    <div class="row-side">
+      <button class="btn sm" data-action="invite-copy" data-code="${esc(row.code)}" type="button">复制</button>
+      <button class="btn sm" data-action="invite-toggle" data-id="${row.id}" data-enabled="${row.enabled ? '0' : '1'}" type="button">${row.enabled ? '停用' : '启用'}</button>
+      <button class="btn sm danger" data-action="invite-delete" data-id="${row.id}" type="button">删除</button>
+    </div>
+  </div>`
+}
+
+function renderInvites() {
+  el('invite-list').innerHTML = state.invites.length
+    ? state.invites.map(inviteRow).join('')
+    : '<div class="empty">还没有邀请码。上方填数量生成，注册模式切到「需要邀请码」后生效。</div>'
+}
+
+async function submitInvite(event) {
+  event.preventDefault()
+  try {
+    const data = await api('/admin/invites', {
+      method: 'POST',
+      body: JSON.stringify({
+        count: Number(el('invite-count').value) || 1,
+        maxUses: Number(el('invite-uses').value) || 1,
+        expiresAt: el('invite-expires').value ? new Date(el('invite-expires').value).getTime() : 0,
+        note: el('invite-note').value.trim()
+      })
+    })
+    el('invite-result').textContent = `已生成：${(data.codes || []).join('  ')}`
+    el('invite-note').value = ''
+    toast('邀请码已生成')
+    await loadAll()
+  } catch (error) {
+    el('invite-result').textContent = error.message
+  }
+}
+
+async function toggleInvite(id, enabled) {
+  try {
+    await api(`/admin/invites/${id}`, { method: 'PUT', body: JSON.stringify({ enabled }) })
+    toast(enabled ? '邀请码已启用' : '邀请码已停用')
+    await loadAll()
+  } catch (error) {
+    toast(error.message, true)
+  }
+}
+
+async function deleteInvite(id) {
+  if (!window.confirm('确定删除这个邀请码？已用它注册的账号不受影响。')) return
+  try {
+    await api(`/admin/invites/${id}`, { method: 'DELETE' })
+    toast('邀请码已删除')
+    await loadAll()
+  } catch (error) {
+    toast(error.message, true)
+  }
+}
+
+/* ---------- 反馈 ---------- */
+const FEEDBACK_KIND = { request: '求片', problem: '问题', other: '建议', feedback: '反馈' }
+const FEEDBACK_STATUS = { open: '待处理', done: '已完成', ignored: '已忽略' }
+
+function feedbackRow(row) {
+  const actions = []
+  if (row.status !== 'done') actions.push(`<button class="btn sm primary" data-action="feedback-status" data-id="${row.id}" data-status="done" type="button">完成</button>`)
+  if (row.status !== 'ignored') actions.push(`<button class="btn sm" data-action="feedback-status" data-id="${row.id}" data-status="ignored" type="button">忽略</button>`)
+  if (row.status !== 'open') actions.push(`<button class="btn sm" data-action="feedback-status" data-id="${row.id}" data-status="open" type="button">重新打开</button>`)
+  actions.push(`<button class="btn sm danger" data-action="feedback-delete" data-id="${row.id}" type="button">删除</button>`)
+  return `<div class="row">
+    <div class="row-main">
+      <div class="row-title">${esc(row.title)}
+        <span class="tag ${row.status === 'open' ? 'warn' : row.status === 'done' ? 'ok' : 'off'}">${FEEDBACK_STATUS[row.status] || row.status}</span>
+        <span class="tag">${FEEDBACK_KIND[row.kind] || esc(row.kind)}</span>
+      </div>
+      <div class="row-sub">${esc(row.body || '')}</div>
+      <div class="row-sub">${row.username ? '用户 ' + esc(row.username) : '匿名'}${row.contact ? ' · 联系 ' + esc(row.contact) : ''}${row.device ? ' · ' + esc(row.device) : ''} · ${fmtTime(row.created_at)}</div>
+      ${row.admin_note ? `<div class="row-sub">备注：${esc(row.admin_note)}</div>` : ''}
+    </div>
+    <div class="row-side">${actions.join('')}</div>
+  </div>`
+}
+
+function renderFeedback() {
+  el('feedback-list').innerHTML = state.feedback.length
+    ? state.feedback.map(feedbackRow).join('')
+    : '<div class="empty">这个筛选下没有反馈。</div>'
+}
+
+async function setFeedbackStatus(id, status) {
+  const note = window.prompt('处理备注（可留空）', '')
+  if (note === null) return
+  try {
+    await api(`/admin/feedback/${id}`, { method: 'PUT', body: JSON.stringify({ status, adminNote: note.trim() }) })
+    toast('反馈状态已更新')
+    await loadFeedback()
+  } catch (error) {
+    toast(error.message, true)
+  }
+}
+
+async function deleteFeedback(id) {
+  if (!window.confirm('确定删除这条反馈？')) return
+  try {
+    await api(`/admin/feedback/${id}`, { method: 'DELETE' })
+    toast('反馈已删除')
+    await loadFeedback()
+  } catch (error) {
+    toast(error.message, true)
+  }
+}
+
+async function loadFeedback() {
+  try {
+    const data = await api(`/admin/feedback?status=${el('feedback-filter').value}`)
+    state.feedback = data.feedback || []
+    renderFeedback()
+  } catch (error) {
+    toast(error.message, true)
+  }
+}
+
+/* ---------- 审计 ---------- */
+const AUDIT_LABEL = {
+  'source.create': '新增源',
+  'source.update': '更新源',
+  'source.delete': '删除源',
+  'source.probe': '检测源',
+  'sweep.run': '运行体检',
+  'alert.resolve': '处理告警',
+  'alert.resolve-all': '批量处理告警',
+  'announcement.create': '发布公告',
+  'announcement.update': '更新公告',
+  'announcement.delete': '删除公告',
+  'user.register': '用户注册',
+  'user.status': '修改用户状态',
+  'user.delete': '删除用户',
+  'user.revoke-sessions': '强制下线',
+  'session.revoke': '下线设备',
+  'session.revoke-others': '下线其他设备',
+  'settings.update': '修改设置',
+  'invite.create': '生成邀请码',
+  'invite.update': '修改邀请码',
+  'invite.delete': '删除邀请码',
+  'feedback.update': '处理反馈',
+  'feedback.delete': '删除反馈'
+}
+
+function renderAudit() {
+  el('audit-list').innerHTML = state.audit.length
+    ? state.audit
+        .map(
+          (row) => `<div class="row">
+            <div class="row-main">
+              <div class="row-title">${esc(AUDIT_LABEL[row.action] || row.action)}
+                <span class="tag">${esc(row.actor || 'admin')}</span>
+              </div>
+              <div class="row-sub">${row.target ? esc(row.target) + ' · ' : ''}${esc(row.detail || '')}</div>
+              <div class="row-sub">${fmtTime(row.created_at)}${row.ip ? ' · ' + esc(row.ip) : ''}</div>
+            </div>
+          </div>`
+        )
+        .join('')
+    : '<div class="empty">还没有操作记录。</div>'
+}
+
+async function loadAudit() {
+  const keyword = el('audit-search').value.trim()
+  try {
+    const data = await api(`/admin/audit?limit=120${keyword ? `&q=${encodeURIComponent(keyword)}` : ''}`)
+    state.audit = data.logs || []
+    renderAudit()
+  } catch (error) {
+    toast(error.message, true)
+  }
+}
+
+/* ---------- 体检 ---------- */
+async function runSweep(button) {
+  button.disabled = true
+  const original = button.textContent
+  let checked = 0
+  let failed = 0
+  let since = 0
+  try {
+    for (let round = 0; round < 30; round += 1) {
+      button.textContent = `体检中… 已查 ${checked}`
+      const data = await api('/admin/sweep', { method: 'POST', body: JSON.stringify({ limit: 6, since }) })
+      since = Number(data.since) || since
+      checked += data.checked || 0
+      failed += data.failed || 0
+      if (!data.remaining) break
+    }
+    toast(`体检完成：${checked} 个源，失败 ${failed} 个`)
+  } catch (error) {
+    toast(error.message, true)
+  } finally {
+    button.disabled = false
+    button.textContent = original
+    await loadAll()
+  }
+}
+
+async function resolveAlert(id) {
+  try {
+    await api(`/admin/alerts/${id}`, { method: 'PUT' })
+    toast('告警已处理')
+    await loadAll()
+  } catch (error) {
+    toast(error.message, true)
+  }
+}
+
+async function resolveAllAlerts() {
+  if (!window.confirm('把所有待处理告警标记为已处理？')) return
+  try {
+    await api('/admin/alerts/resolve-all', { method: 'POST' })
+    toast('已全部处理')
+    await loadAll()
+  } catch (error) {
+    toast(error.message, true)
+  }
+}
+
 /* ---------- 设置 ---------- */
 function renderSettings() {
   if (!state.settings) return
   el('set-site-name').value = state.settings.siteName || 'KayTV'
-  el('set-reg-open').checked = Boolean(state.settings.registrationOpen)
+  el('set-reg-mode').value = state.settings.registrationMode || (state.settings.registrationOpen ? 'open' : 'closed')
   el('set-auto-approve').checked = Boolean(state.settings.autoApprove)
+  el('set-min-version').value = state.settings.minVersion || ''
+  el('set-update-url').value = state.settings.updateUrl || ''
+  el('set-fail-threshold').value = String(state.settings.failThreshold || 2)
 }
 
 async function submitSettings(event) {
@@ -529,8 +853,11 @@ async function submitSettings(event) {
       method: 'PUT',
       body: JSON.stringify({
         siteName: el('set-site-name').value.trim(),
-        registrationOpen: el('set-reg-open').checked,
-        autoApprove: el('set-auto-approve').checked
+        registrationMode: el('set-reg-mode').value,
+        autoApprove: el('set-auto-approve').checked,
+        minVersion: el('set-min-version').value.trim(),
+        updateUrl: el('set-update-url').value.trim(),
+        failThreshold: Number(el('set-fail-threshold').value) || 2
       })
     })
     state.settings = data.settings || state.settings
@@ -608,6 +935,27 @@ function bindEvents() {
       case 'user-delete':
         void deleteUser(id)
         break
+      case 'user-revoke':
+        void revokeUserSessions(id)
+        break
+      case 'alert-resolve':
+        void resolveAlert(id)
+        break
+      case 'invite-copy':
+        void copyText(action.dataset.code || '').then((ok) => toast(ok ? '邀请码已复制' : '复制失败', !ok))
+        break
+      case 'invite-toggle':
+        void toggleInvite(id, action.dataset.enabled === '1')
+        break
+      case 'invite-delete':
+        void deleteInvite(id)
+        break
+      case 'feedback-status':
+        void setFeedbackStatus(id, action.dataset.status)
+        break
+      case 'feedback-delete':
+        void deleteFeedback(id)
+        break
     }
   })
   document.addEventListener('change', (event) => {
@@ -619,6 +967,8 @@ function bindEvents() {
   el('source-refresh').addEventListener('click', () => void loadAll())
   el('source-filter').addEventListener('change', renderSources)
   el('bulk-add').addEventListener('click', () => void bulkAdd())
+  el('sweep-run').addEventListener('click', (event) => void runSweep(event.currentTarget))
+  el('alerts-resolve').addEventListener('click', () => void resolveAllAlerts())
   el('ann-form').addEventListener('submit', (event) => void submitAnnouncement(event))
   el('ann-reset').addEventListener('click', resetAnnForm)
   el('user-refresh').addEventListener('click', () => void loadUsers())
@@ -626,6 +976,17 @@ function bindEvents() {
     if (event.key === 'Enter') {
       event.preventDefault()
       void loadUsers()
+    }
+  })
+  el('invite-form').addEventListener('submit', (event) => void submitInvite(event))
+  el('invite-refresh').addEventListener('click', () => void loadAll())
+  el('feedback-filter').addEventListener('change', () => void loadFeedback())
+  el('feedback-refresh').addEventListener('click', () => void loadFeedback())
+  el('audit-refresh').addEventListener('click', () => void loadAudit())
+  el('audit-search').addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      void loadAudit()
     }
   })
   el('settings-form').addEventListener('submit', (event) => void submitSettings(event))

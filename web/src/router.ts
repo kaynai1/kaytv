@@ -7,6 +7,7 @@ const routes = [
   { path: '/hot', name: 'hot', component: () => import('./views/HotView.vue'), meta: { title: '最新热门' } },
   { path: '/search', name: 'search', component: () => import('./views/SearchView.vue'), meta: { title: '搜索' } },
   { path: '/favorites', name: 'favorites', component: () => import('./views/FavoritesView.vue'), meta: { title: '我的清单' } },
+  { path: '/feedback', name: 'feedback', component: () => import('./views/FeedbackView.vue'), meta: { title: '求片与反馈' } },
   { path: '/settings', name: 'settings', component: () => import('./views/SettingsView.vue'), meta: { title: '设置' } },
   { path: '/login', name: 'login', component: () => import('./views/LoginView.vue'), meta: { title: '登录', auth: true } },
   {
