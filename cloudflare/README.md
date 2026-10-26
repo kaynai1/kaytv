@@ -51,7 +51,7 @@ npx wrangler pages secret put ADMIN_TOKEN --project-name kaytv-hub
 
 打开 `https://<项目名>.pages.dev`，输入 `ADMIN_TOKEN` 登录。
 
-已有旧版本数据库升级：依次执行 `migrations/` 下尚未应用的 SQL（如 `2026-10-26-v0.5.0.sql`），再重新部署 Pages。
+已有旧版本数据库升级：依次执行 `migrations/` 下尚未应用的 SQL（如 `2026-10-26-v0.5.0.sql`、`2026-10-26-v0.6.0.sql`），再重新部署 Pages。
 
 > 只在 Cloudflare 控制台操作也可以：Workers & Pages → Create → Pages → 连接仓库或上传，
 > 构建输出目录填 `admin`；在 D1 控制台粘贴 `schema.sql` 执行；
@@ -79,6 +79,16 @@ npx wrangler deploy
 - 每轮最多探测 4 个最久未检查的源，自动续跑直到本轮全部完成，不会集中在同一分钟打满请求
 - 也可以在管理页「概览 → 源体检与告警」手动点「立即体检」
 - 想临时手动触发 Worker：`curl -X POST -H "Authorization: Bearer $CRON_TOKEN" https://kaytv-hub-cron.<账户子域>.workers.dev/run`
+
+## 看剧AI 云端代签
+
+「看剧AI」面板（左侧第三个标签）可以不重新打包就换源：
+
+- 填官网地址（如 `https://kanju78.com`）→ 点「开始识别」：云端会打开官网、读取页面脚本、提取签名密钥与客户端标识，并用官方接口实测，通过才保存
+- 密钥只存 D1，接口只返回掩码（`557d…54a0`），管理页和客户端都看不到明文
+- 0.5.1 起的三端自动改走 `/api/kanju/*` 代理；0.5.0 及更早版本仍用打包时注入的密钥
+- 遇到上游 401/403 会自动重新识别（默认开），也可以手动点「重新识别签名」或临时停用
+- 代理只放行 `/v1/browse`、`/v1/catalog`、`/v1/playback` 三类接口，单次响应上限 3MB
 
 ## 客户端接入
 

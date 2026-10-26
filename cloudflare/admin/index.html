@@ -27,6 +27,7 @@
         <nav id="tabs" class="tabs">
           <button class="tab active" data-tab="overview">概览</button>
           <button class="tab" data-tab="sources">源管理</button>
+          <button class="tab" data-tab="kanju">看剧AI</button>
           <button class="tab" data-tab="announcements">公告</button>
           <button class="tab" data-tab="users">用户</button>
           <button class="tab" data-tab="invites">邀请码</button>
@@ -167,6 +168,56 @@
               </div>
             </div>
             <div id="source-list" class="list"></div>
+          </div>
+        </section>
+
+        <section id="panel-kanju" class="panel-page hidden">
+          <div class="page-head">
+            <div>
+              <h1>看剧AI</h1>
+              <p class="muted">
+                填官网域名即可自动抓取签名参数并在云端代签。密钥只保存在 D1，后台只显示掩码，客户端永远拿不到。
+                0.5.1 起的三端会自动改走云端代理，以后换域名或换密钥只需在这里操作，不用重新打包。
+              </p>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <h2>当前状态</h2>
+              <div class="inline">
+                <span id="kanju-badge" class="tag">未配置</span>
+                <button id="kanju-refresh" class="btn sm" type="button">重新识别签名</button>
+              </div>
+            </div>
+            <div id="kanju-status" class="list"></div>
+            <p id="kanju-error" class="error"></p>
+            <div class="inline" style="margin-top: 12px">
+              <button id="kanju-toggle" class="btn sm" type="button">启用云端代理</button>
+              <label class="check"><input id="kanju-auto-refresh" type="checkbox" /> 遇到 401/403 自动重新识别（间隔至少 5 分钟）</label>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <h2>自动识别并启用</h2>
+              <span class="muted small">官网首页含签名脚本时通常 10 秒内完成</span>
+            </div>
+            <form id="kanju-form" class="form-grid">
+              <label class="wide">官网地址
+                <input id="kanju-url" class="input" placeholder="https://kanju78.com" />
+              </label>
+              <div class="form-actions">
+                <button class="btn primary" type="submit">开始识别</button>
+              </div>
+            </form>
+            <p id="kanju-message" class="muted small"></p>
+          </div>
+          <div class="card">
+            <h2>说明</h2>
+            <p class="muted small">
+              识别流程：打开官网 → 读取页面引用的脚本 → 找到 x-ai-movie 签名代码 → 提取密钥与客户端标识 → 用官方接口实测。
+              实测通过才会保存。代理只放行 /v1/browse、/v1/catalog、/v1/playback 三类接口，单次响应上限 3MB。
+              0.5.0 及更早版本仍使用打包时注入的密钥，需要升级到 0.5.1 才能自动跟随云端。
+            </p>
           </div>
         </section>
 

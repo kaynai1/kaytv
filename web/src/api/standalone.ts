@@ -512,6 +512,16 @@ const KANJU_CATEGORIES: Category[] = [
 ]
 
 let kanjuKey: Promise<CryptoKey> | null = null
+let kanjuProxyBase = ''
+
+/** 云后台启用看剧AI 代签后，客户端走云端代理，密钥不再依赖构建期注入 */
+export function setKanjuProxy(base: string) {
+  kanjuProxyBase = String(base || '').replace(/\/+$/, '')
+}
+
+function kanjuProxyUrl(path: string): string {
+  return `${kanjuProxyBase}${path}`
+}
 
 function hexOf(bytes: Uint8Array): string {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
@@ -551,6 +561,67 @@ async function kanjuHeaders(url: URL, method = 'GET'): Promise<Record<string, st
   }
 }
 
+interface KanjuAttempt {
+  payload?: Record<string, unknown>
+  error?: string
+  retryable?: boolean
+}
+
+async function kanjuAttempt(
+  source: LocalSource,
+  path: string,
+  timeout: number,
+  method: string,
+  body: unknown,
+  mode: 'proxy' | 'direct'
+): Promise<KanjuAttempt> {
+  let href: string
+  try {
+    href = mode === 'proxy' ? kanjuProxyUrl(path) : new URL(path, source.api).href
+  } catch {
+    return { error: '接口地址无效' }
+  }
+  const controller = new AbortController()
+  const timer = window.setTimeout(() => controller.abort(), timeout)
+  try {
+    const headers: Record<string, string> =
+      mode === 'proxy'
+        ? { accept: 'application/json, text/plain, */*' }
+        : await kanjuHeaders(new URL(href), method)
+    if (method !== 'GET') headers['content-type'] = 'application/json'
+    const response = await fetch(href, {
+      method,
+      headers,
+      body: method === 'GET' ? undefined : JSON.stringify(body || {}),
+      referrerPolicy: 'no-referrer',
+      signal: controller.signal
+    })
+    const text = await response.text()
+    if (!response.ok) {
+      let detail = ''
+      try {
+        const data = JSON.parse(text) as { error?: unknown }
+        if (typeof data?.error === 'string') detail = data.error
+      } catch {
+        /* non-JSON error body */
+      }
+      return { error: detail || `HTTP ${response.status}`, retryable: mode === 'proxy' }
+    }
+    try {
+      return { payload: JSON.parse(text) as Record<string, unknown> }
+    } catch {
+      return { error: '返回内容不是 JSON' }
+    }
+  } catch {
+    return {
+      error: controller.signal.aborted ? '请求超时' : '无法访问接口',
+      retryable: mode === 'proxy'
+    }
+  } finally {
+    window.clearTimeout(timer)
+  }
+}
+
 async function kanjuJson(
   source: LocalSource,
   path: string,
@@ -558,48 +629,31 @@ async function kanjuJson(
   options: { method?: string; body?: unknown } = {}
 ): Promise<Record<string, unknown>> {
   const started = Date.now()
-  let url: URL
-  try {
-    url = new URL(path, source.api)
-  } catch {
-    throw new Error(`${source.name}: 接口地址无效`)
-  }
   const method = String(options.method || 'GET').toUpperCase()
-  const controller = new AbortController()
-  const timer = window.setTimeout(() => controller.abort(), timeout)
-  try {
-    const headers = await kanjuHeaders(url, method)
-    if (method !== 'GET') headers['content-type'] = 'application/json'
-    const response = await fetch(url.href, {
+  const modes: ('proxy' | 'direct')[] = []
+  if (kanjuProxyBase) modes.push('proxy')
+  if (KANJU_SECRET) modes.push('direct')
+  if (!modes.length) throw new Error(`${source.name}: 云端未启用看剧AI 代签，本机构建也没有内置密钥`)
+  let lastError = '无法访问接口'
+  for (const mode of modes) {
+    const attempt = await kanjuAttempt(
+      source,
+      path,
+      mode === 'proxy' ? Math.min(timeout, 9000) : timeout,
       method,
-      headers,
-      body: method === 'GET' ? undefined : JSON.stringify(options.body || {}),
-      referrerPolicy: 'no-referrer',
-      signal: controller.signal
-    })
-    if (!response.ok) {
-      markFailed(source.id, `HTTP ${response.status}`)
-      rememberHealth(source.id, false, Date.now() - started)
-      throw new Error(`${source.name}: HTTP ${response.status}`)
-    }
-    const text = await response.text()
-    try {
-      const payload = JSON.parse(text) as Record<string, unknown>
+      options.body,
+      mode
+    )
+    if (attempt.payload) {
       rememberHealth(source.id, true, Date.now() - started)
-      return payload
-    } catch {
-      markFailed(source.id, '返回内容不是 JSON')
-      rememberHealth(source.id, false, Date.now() - started)
-      throw new Error(`${source.name}: 返回内容不是 JSON`)
+      return attempt.payload
     }
-  } catch (error) {
-    if (error instanceof Error && error.message.startsWith(source.name)) throw error
-    markFailed(source.id, controller.signal.aborted ? '请求超时' : '无法访问接口')
-    rememberHealth(source.id, false, Date.now() - started)
-    throw new Error(`${source.name}: ${controller.signal.aborted ? '请求超时' : '无法访问接口'}`)
-  } finally {
-    window.clearTimeout(timer)
+    lastError = attempt.error || lastError
+    if (!attempt.retryable) break
   }
+  markFailed(source.id, lastError)
+  rememberHealth(source.id, false, Date.now() - started)
+  throw new Error(`${source.name}: ${lastError}`)
 }
 
 function kanjuCard(raw: Record<string, unknown>, source: LocalSource): VodItem | null {
@@ -1428,20 +1482,35 @@ export async function probeVodSource(id: string): Promise<SourceProbe> {
   const started = performance.now()
   try {
     if (source.type === 'kanju') {
-      const url = new URL('/v1/browse/catalog?page=1&limit=1', source.api)
-      const response = await fetchProbe(url.href, 12000, await kanjuHeaders(url, 'GET'))
-      if (!response.ok) {
-        return { ok: false, ms: Math.round(performance.now() - started), detail: `HTTP ${response.status}` }
+      const path = '/v1/browse/catalog?page=1&limit=1'
+      const modes: ('proxy' | 'direct')[] = []
+      if (kanjuProxyBase) modes.push('proxy')
+      if (KANJU_SECRET) modes.push('direct')
+      if (!modes.length) {
+        return {
+          ok: false,
+          ms: Math.round(performance.now() - started),
+          detail: '云端未启用代签，本机构建也没有内置密钥'
+        }
       }
-      const payload = probeText(response.text)
-      if (!payload) {
-        return { ok: false, ms: Math.round(performance.now() - started), detail: '返回内容不是 JSON' }
+      let detail = '无法访问'
+      for (const mode of modes) {
+        const attempt = await kanjuAttempt(source, path, mode === 'proxy' ? 9000 : 12000, 'GET', undefined, mode)
+        if (!attempt.payload) {
+          detail = attempt.error || detail
+          continue
+        }
+        const cards = Array.isArray(attempt.payload.cards) ? attempt.payload.cards.length : 0
+        return {
+          ok: true,
+          ms: Math.round(performance.now() - started),
+          detail: `云端代签正常${cards ? ' · 含官方高清/4K 线路' : ''}`
+        }
       }
-      const cards = Array.isArray(payload.cards) ? payload.cards.length : 0
       return {
-        ok: true,
+        ok: false,
         ms: Math.round(performance.now() - started),
-        detail: cards ? '官方接口正常 · 含官方高清/4K 线路' : '官方接口正常'
+        detail: modes.length > 1 ? `${detail}（云端与直连都失败）` : detail
       }
     }
     const url = new URL(source.api)

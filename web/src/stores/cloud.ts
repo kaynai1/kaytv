@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { setCloudSources, type CloudInput } from '../api/customSources'
+import { setKanjuProxy } from '../api/standalone'
 import { normalizeServerUrl, runtime } from '../api/runtime'
 import { importTvboxSource } from '../api/tvboxImport'
 import type { FavoriteItem, HistoryEntry } from '../types'
@@ -42,6 +43,7 @@ interface CloudConfig {
   updateUrl?: string
   announcement?: CloudAnnouncement | null
   sources?: CloudRawSource[]
+  kanju?: { enabled?: boolean; name?: string; proxy?: string }
 }
 
 export interface CloudSession {
@@ -200,6 +202,7 @@ export const useCloudStore = defineStore('cloud', {
       siteName: 'KayTV',
       announcement: null as CloudAnnouncement | null,
       sources: [] as CloudRawSource[],
+      kanjuEnabled: false,
       registrationOpen: true,
       registrationMode: 'open' as 'open' | 'invite' | 'closed',
       autoApprove: true,
@@ -290,6 +293,8 @@ export const useCloudStore = defineStore('cloud', {
         this.updateUrl = String(config.updateUrl || '')
         this.announcement = config.announcement || null
         this.sources = Array.isArray(config.sources) ? config.sources : []
+        this.kanjuEnabled = Boolean(config.kanju?.enabled)
+        setKanjuProxy(this.kanjuEnabled ? `${this.endpoint}${config.kanju?.proxy || '/api/kanju'}` : '')
         const settings = useSettingsStore()
         const changed = settings.standalone ? await this.applySources(this.sources) : false
         if (changed) await settings.refresh()

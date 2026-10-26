@@ -15,6 +15,7 @@ let state = {
   feedback: [],
   audit: [],
   settings: null,
+  kanju: null,
   editingSource: '',
   editingAnnouncement: ''
 }
@@ -116,7 +117,7 @@ function logout() {
 
 async function loadAll() {
   try {
-    const [overview, sources, announcements, users, settings, alerts, invites, feedback, audit] = await Promise.all([
+    const [overview, sources, announcements, users, settings, alerts, invites, feedback, audit, kanju] = await Promise.all([
       api('/admin/overview'),
       api('/admin/sources'),
       api('/admin/announcements'),
@@ -125,7 +126,8 @@ async function loadAll() {
       api('/admin/alerts'),
       api('/admin/invites'),
       api(`/admin/feedback?status=${el('feedback-filter')?.value || 'open'}`),
-      api('/admin/audit?limit=80')
+      api('/admin/audit?limit=80'),
+      api('/admin/kanju')
     ])
     state.overview = overview
     state.sources = sources.sources || []
@@ -136,6 +138,7 @@ async function loadAll() {
     state.invites = invites.invites || []
     state.feedback = feedback.feedback || []
     state.audit = audit.logs || []
+    state.kanju = kanju.kanju || null
     renderAll()
   } catch (error) {
     toast(error.message, true)
@@ -145,6 +148,7 @@ async function loadAll() {
 function renderAll() {
   renderOverview()
   renderSources()
+  renderKanju()
   renderAnnouncements()
   renderUsers()
   renderInvites()
@@ -409,6 +413,120 @@ async function bulkAdd() {
   if (added) {
     el('bulk-text').value = ''
     await loadAll()
+  }
+}
+
+/* ---------- 看剧AI ---------- */
+function renderKanju() {
+  const info = state.kanju
+  const badge = el('kanju-badge')
+  const toggle = el('kanju-toggle')
+  const refresh = el('kanju-refresh')
+  const auto = el('kanju-auto-refresh')
+  if (!info) {
+    badge.className = 'tag'
+    badge.textContent = '未配置'
+    toggle.disabled = true
+    refresh.disabled = true
+    return
+  }
+  if (!info.configured) {
+    badge.className = 'tag warn'
+    badge.textContent = '未配置'
+  } else if (info.enabled) {
+    badge.className = 'tag ok'
+    badge.textContent = '云端代理启用中'
+  } else {
+    badge.className = 'tag off'
+    badge.textContent = '已停用'
+  }
+  toggle.disabled = !info.configured
+  toggle.textContent = info.enabled ? '停用云端代理' : '启用云端代理'
+  refresh.disabled = !info.configured
+  auto.checked = Boolean(info.autoRefresh)
+  auto.disabled = !info.configured
+  const rows = [
+    ['域名', info.baseUrl || '未填写', ''],
+    ['接口密钥', info.secretMasked || '未保存', '只显示首尾 4 位'],
+    ['客户端标识', [info.clientName, info.clientVersion].filter(Boolean).join(' · ') || '—', ''],
+    ['构建标识', info.buildVersion || '—', ''],
+    ['协议版本', info.protocolVersion || '—', ''],
+    ['最近成功', fmtTime(info.lastOkAt), ''],
+    ['最近检查', fmtTime(info.lastCheckAt), ''],
+    ['最近错误', info.lastError || '无', info.lastError ? 'bad' : '']
+  ]
+  el('kanju-status').innerHTML = rows
+    .map(
+      ([label, value, kind]) => `<div class="row">
+        <div class="row-main">
+          <div class="row-title">${esc(label)}</div>
+          <div class="row-sub"${kind === 'bad' ? ' style="color: var(--bad, #ff6b6b)"' : ''}>${esc(value)}</div>
+        </div>
+      </div>`
+    )
+    .join('')
+  el('kanju-error').textContent = ''
+  if (info.baseUrl && document.activeElement !== el('kanju-url')) el('kanju-url').value = info.baseUrl
+}
+
+async function submitKanju(event) {
+  event.preventDefault()
+  const button = event.target.querySelector('button[type="submit"]')
+  const url = el('kanju-url').value.trim()
+  if (!url) {
+    toast('请填写看剧AI 官网地址', true)
+    return
+  }
+  const label = button.textContent
+  button.disabled = true
+  button.textContent = '识别中…'
+  el('kanju-message').textContent = '正在打开官网、抓取脚本并实测官方接口，最长约 60 秒…'
+  try {
+    const data = await api('/admin/kanju', { method: 'POST', body: JSON.stringify({ url }) })
+    state.kanju = data.kanju || state.kanju
+    renderKanju()
+    el('kanju-message').textContent = '识别成功，云端代理已启用。0.5.1 起的三端会在下次同步后自动走云端，无需重装。'
+    toast('看剧AI 已自动识别并启用')
+  } catch (error) {
+    el('kanju-error').textContent = error.message
+    el('kanju-message').textContent = '识别失败，原有配置未改动。'
+    toast(error.message, true)
+  } finally {
+    button.disabled = false
+    button.textContent = label
+  }
+}
+
+async function refreshKanjuConfig() {
+  const button = el('kanju-refresh')
+  const label = button.textContent
+  button.disabled = true
+  button.textContent = '识别中…'
+  el('kanju-message').textContent = '正在重新抓取签名并实测…'
+  try {
+    const data = await api('/admin/kanju/refresh', { method: 'POST' })
+    state.kanju = data.kanju || state.kanju
+    renderKanju()
+    el('kanju-message').textContent = '已重新识别签名，云端代理继续可用。'
+    toast('签名已刷新')
+  } catch (error) {
+    el('kanju-error').textContent = error.message
+    toast(error.message, true)
+  } finally {
+    button.disabled = false
+    button.textContent = label
+  }
+}
+
+async function updateKanju(patch) {
+  try {
+    const data = await api('/admin/kanju', { method: 'PUT', body: JSON.stringify(patch) })
+    state.kanju = data.kanju || state.kanju
+    renderKanju()
+    toast('看剧AI 设置已保存')
+  } catch (error) {
+    toast(error.message, true)
+    renderKanju()
   }
 }
 
@@ -988,6 +1106,16 @@ function bindEvents() {
       event.preventDefault()
       void loadAudit()
     }
+  })
+  el('kanju-form').addEventListener('submit', (event) => void submitKanju(event))
+  el('kanju-refresh').addEventListener('click', () => void refreshKanjuConfig())
+  el('kanju-toggle').addEventListener('click', () => {
+    const info = state.kanju
+    if (!info?.configured) return
+    void updateKanju({ enabled: !info.enabled })
+  })
+  el('kanju-auto-refresh').addEventListener('change', (event) => {
+    void updateKanju({ autoRefresh: event.target.checked })
   })
   el('settings-form').addEventListener('submit', (event) => void submitSettings(event))
 }

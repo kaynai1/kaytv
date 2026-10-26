@@ -152,3 +152,19 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
   ('min_version', ''),
   ('update_url', 'https://github.com/kaynai1/kaytv/releases/latest'),
   ('alert_fail_threshold', '2');
+
+CREATE TABLE IF NOT EXISTS kanju_config (
+  id TEXT PRIMARY KEY,
+  base_url TEXT NOT NULL DEFAULT '',
+  secret TEXT NOT NULL DEFAULT '',
+  client_name TEXT NOT NULL DEFAULT '',
+  client_version TEXT NOT NULL DEFAULT '',
+  build_version TEXT NOT NULL DEFAULT '',
+  protocol_version TEXT NOT NULL DEFAULT '',
+  enabled INTEGER NOT NULL DEFAULT 0,
+  auto_refresh INTEGER NOT NULL DEFAULT 1,
+  last_ok_at INTEGER NOT NULL DEFAULT 0,
+  last_check_at INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT NOT NULL DEFAULT '',
+  updated_at INTEGER NOT NULL DEFAULT 0
+);

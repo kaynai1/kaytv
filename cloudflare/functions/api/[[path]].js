@@ -15,6 +15,12 @@ const SESSION_TTL = 30 * 24 * 3600 * 1000
 const MAX_SYNC_BYTES = 512 * 1024
 const PBKDF2_ITERATIONS = 100000
 const PROBE_TIMEOUT = 20000
+const KANJU_TIMEOUT = 20000
+const KANJU_DISCOVER_TIMEOUT = 12000
+const KANJU_MAX_BODY = 3 * 1024 * 1024
+const KANJU_REFRESH_GAP = 5 * 60 * 1000
+const KANJU_DEFAULT_CLIENT = 'dianyingtiantang-frontend'
+const KANJU_DEFAULT_CLIENT_VERSION = '1.0.0'
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -131,6 +137,7 @@ async function publicConfig(env) {
   )
     .bind(now, now)
     .first()
+  const kanju = await getKanju(env)
   return {
     ok: true,
     siteName: settings.siteName,
@@ -159,7 +166,12 @@ async function publicConfig(env) {
       url: row.url,
       type: row.type || '',
       note: row.note || ''
-    }))
+    })),
+    kanju: {
+      enabled: Boolean(kanju?.enabled && kanju?.base_url && kanju?.secret),
+      name: '看剧AI',
+      proxy: '/api/kanju'
+    }
   }
 }
 
@@ -186,6 +198,333 @@ function deviceFromUa(raw) {
 function clientIp(request) {
   return clean(request.headers.get('cf-connecting-ip') || '', 60)
 }
+
+async function fetchTimed(url, init = {}, timeout = KANJU_DISCOVER_TIMEOUT) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeout)
+  try {
+    return await fetch(url, { ...init, signal: controller.signal })
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+function normalizeKanjuUrl(value) {
+  let raw = clean(value, 300)
+  if (!raw) return ''
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) raw = `https://${raw}`
+  let url
+  try {
+    url = new URL(raw)
+  } catch {
+    return ''
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return ''
+  const host = url.hostname.toLowerCase()
+  if (!host.includes('.') || host === 'localhost' || host.startsWith('[') || /^\d+(\.\d+){3}$/.test(host)) return ''
+  if (/^(10|127)\./.test(host) || /^192\.168\./.test(host) || /^172\.(1[6-9]|2\d|3[01])\./.test(host)) return ''
+  return url.origin
+}
+
+function kanjuPathAllowed(path) {
+  const cleanPath = path.split('?')[0]
+  return cleanPath === '/v1/browse/catalog' || cleanPath.startsWith('/v1/catalog/') || cleanPath.startsWith('/v1/playback/')
+}
+
+function kanjuMetaFromSource(text) {
+  const clientName = (text.match(/["'](dianyingtiantang-frontend)["']/) || [])[1] || KANJU_DEFAULT_CLIENT
+  const buildVersion = (text.match(/["'](dianyingtiantang-v[^"']{1,160})["']/) || [])[1] || ''
+  const protocols = [...text.matchAll(/["'](20\d{2}-\d{2}-\d{2}[^"']{0,120})["']/g)].map((match) => match[1])
+  const protocolVersion = protocols.find((value) => /playback|library/.test(value)) || protocols[0] || ''
+  return { clientName, clientVersion: KANJU_DEFAULT_CLIENT_VERSION, buildVersion, protocolVersion }
+}
+
+async function kanjuHeaders(secret, method, path, meta = {}) {
+  const timestamp = String(Date.now())
+  const nonce = randomToken(16)
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  )
+  const signature = await crypto.subtle.sign(
+    'HMAC',
+    key,
+    new TextEncoder().encode(`${method}\n${path}\n${timestamp}\n${nonce}`)
+  )
+  return {
+    accept: 'application/json, text/plain, */*',
+    'x-ai-movie-timestamp': timestamp,
+    'x-ai-movie-nonce': nonce,
+    'x-ai-movie-signature': bytesToHex(new Uint8Array(signature)),
+    'x-ai-movie-client-name': meta.clientName || KANJU_DEFAULT_CLIENT,
+    'x-ai-movie-client-version': meta.clientVersion || KANJU_DEFAULT_CLIENT_VERSION,
+    'x-ai-movie-protocol-version': meta.protocolVersion || '',
+    'x-ai-movie-build-version': meta.buildVersion || ''
+  }
+}
+
+async function kanjuRequest(config, path, method = 'GET', body = undefined) {
+  const url = new URL(path, config.baseUrl)
+  const headers = await kanjuHeaders(config.secret, method, `${url.pathname}${url.search}`, config)
+  if (method !== 'GET') headers['content-type'] = 'application/json'
+  const response = await fetchTimed(
+    url.href,
+    {
+      method,
+      headers,
+      body: method === 'GET' ? undefined : JSON.stringify(body || {}),
+      redirect: 'follow'
+    },
+    KANJU_TIMEOUT
+  )
+  const text = await response.text()
+  if (text.length > KANJU_MAX_BODY) throw new Error('看剧AI 返回内容过大')
+  return { response, text }
+}
+
+async function discoverKanju(input) {
+  const baseUrl = normalizeKanjuUrl(input)
+  if (!baseUrl) throw new Error('请输入有效的官网地址，例如 https://kanju78.com')
+  const home = await fetchTimed(
+    `${baseUrl}/`,
+    {
+      headers: {
+        accept: 'text/html,application/xhtml+xml',
+        'user-agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36'
+      },
+      redirect: 'follow'
+    },
+    KANJU_DISCOVER_TIMEOUT
+  )
+  if (!home.ok) throw new Error(`打开官网失败：HTTP ${home.status}`)
+  const finalUrl = home.url || `${baseUrl}/`
+  const finalBase = new URL(finalUrl).origin
+  const html = (await home.text()).slice(0, KANJU_MAX_BODY)
+  const scriptUrls = []
+  for (const match of html.matchAll(/<script[^>]+src=["']([^"']+)["']/gi)) scriptUrls.push(match[1])
+  for (const match of html.matchAll(/<link[^>]+href=["']([^"']+)["'][^>]*>/gi)) {
+    if (/modulepreload|as=["']script["']/i.test(match[0])) scriptUrls.push(match[1])
+  }
+  const unique = [...new Set(scriptUrls)]
+    .map((value) => {
+      try {
+        const url = new URL(value, finalBase)
+        return url.origin === finalBase ? url.href : ''
+      } catch {
+        return ''
+      }
+    })
+    .filter(Boolean)
+    .slice(0, 12)
+  const fetched = await Promise.all(
+    unique.map(async (url) => {
+      try {
+        const response = await fetchTimed(
+          url,
+          {
+            headers: {
+              accept: '*/*',
+              'user-agent':
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36'
+            }
+          },
+          KANJU_DISCOVER_TIMEOUT
+        )
+        if (!response.ok) return ''
+        return (await response.text()).slice(0, KANJU_MAX_BODY)
+      } catch {
+        return ''
+      }
+    })
+  )
+  const signing = [html, ...fetched].filter((text) =>
+    /x-ai-movie-(signature|client-name|timestamp|nonce)/.test(text)
+  )
+  if (!signing.length) throw new Error('官网页面里没找到看剧AI签名代码，可能官网改版了')
+  const joined = signing.join('\n')
+  const meta = kanjuMetaFromSource(joined)
+  const candidates = [...new Set((joined.match(/["']([0-9a-f]{64})["']/gi) || []).map((value) => value.slice(1, -1)))].slice(0, 8)
+  if (!candidates.length) throw new Error('找到了签名代码，但没有提取到密钥')
+  for (const secret of candidates) {
+    try {
+      const result = await kanjuRequest(
+        { baseUrl: finalBase, secret, ...meta },
+        '/v1/browse/catalog?page=1&limit=1'
+      )
+      if (!result.response.ok) continue
+      const payload = JSON.parse(result.text)
+      if (!payload || typeof payload !== 'object') continue
+      return { baseUrl: finalBase, secret, ...meta }
+    } catch {
+      /* try next candidate */
+    }
+  }
+  throw new Error('已提取签名参数，但官方接口验证失败；可能签名协议又变了')
+}
+
+async function getKanju(env) {
+  try {
+    return await env.DB.prepare('SELECT * FROM kanju_config WHERE id = ?1').bind('default').first()
+  } catch {
+    return null
+  }
+}
+
+async function saveKanju(env, patch = {}) {
+  const current = await getKanju(env)
+  const now = Date.now()
+  const next = {
+    baseUrl: patch.baseUrl ?? current?.base_url ?? '',
+    secret: patch.secret ?? current?.secret ?? '',
+    clientName: patch.clientName ?? current?.client_name ?? KANJU_DEFAULT_CLIENT,
+    clientVersion: patch.clientVersion ?? current?.client_version ?? KANJU_DEFAULT_CLIENT_VERSION,
+    buildVersion: patch.buildVersion ?? current?.build_version ?? '',
+    protocolVersion: patch.protocolVersion ?? current?.protocol_version ?? '',
+    enabled: patch.enabled ?? current?.enabled ?? 0,
+    autoRefresh: patch.autoRefresh ?? current?.auto_refresh ?? 1,
+    lastOkAt: patch.lastOkAt ?? current?.last_ok_at ?? 0,
+    lastCheckAt: patch.lastCheckAt ?? current?.last_check_at ?? 0,
+    lastError: patch.lastError ?? current?.last_error ?? '',
+    updatedAt: patch.updatedAt ?? now
+  }
+  await env.DB.prepare(
+    `INSERT OR REPLACE INTO kanju_config
+      (id, base_url, secret, client_name, client_version, build_version, protocol_version,
+       enabled, auto_refresh, last_ok_at, last_check_at, last_error, updated_at)
+     VALUES ('default', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`
+  )
+    .bind(
+      next.baseUrl,
+      next.secret,
+      next.clientName,
+      next.clientVersion,
+      next.buildVersion,
+      next.protocolVersion,
+      next.enabled,
+      next.autoRefresh,
+      next.lastOkAt,
+      next.lastCheckAt,
+      String(next.lastError || '').slice(0, 300),
+      next.updatedAt
+    )
+    .run()
+  return next
+}
+
+function kanjuInfo(row) {
+  return {
+    configured: Boolean(row?.base_url && row?.secret),
+    enabled: Boolean(row?.enabled),
+    autoRefresh: row ? Boolean(row.auto_refresh) : true,
+    baseUrl: row?.base_url || '',
+    secretMasked: row?.secret ? `${row.secret.slice(0, 4)}…${row.secret.slice(-4)}` : '',
+    clientName: row?.client_name || '',
+    clientVersion: row?.client_version || '',
+    buildVersion: row?.build_version || '',
+    protocolVersion: row?.protocol_version || '',
+    lastOkAt: row?.last_ok_at || 0,
+    lastCheckAt: row?.last_check_at || 0,
+    lastError: row?.last_error || '',
+    updatedAt: row?.updated_at || 0
+  }
+}
+
+async function refreshKanju(env, row, force = false) {
+  if (!row?.auto_refresh || !row?.base_url) return null
+  const now = Date.now()
+  if (!force && now - (row.last_check_at || 0) < KANJU_REFRESH_GAP) return null
+  try {
+    const found = await discoverKanju(row.base_url)
+    const saved = await saveKanju(env, {
+      ...found,
+      enabled: 1,
+      lastOkAt: now,
+      lastCheckAt: now,
+      lastError: '',
+      updatedAt: now
+    })
+    return saved
+  } catch (error) {
+    await saveKanju(env, {
+      lastCheckAt: now,
+      lastError: String(error?.message || error).slice(0, 200)
+    })
+    return null
+  }
+}
+
+async function handleKanjuProxy(segments, request, env) {
+  const method = request.method.toUpperCase()
+  if (method !== 'GET' && method !== 'POST') return fail('只支持 GET / POST', 405)
+  const path = '/' + segments.slice(1).join('/')
+  if (!kanjuPathAllowed(path)) return fail('接口不存在', 404)
+  const row = await getKanju(env)
+  if (!row?.enabled || !row.base_url || !row.secret) return fail('云端看剧AI还没有启用', 503)
+  const query = new URL(request.url).search
+  const pathWithQuery = path + query
+  let body
+  if (method === 'POST') {
+    const text = await request.text()
+    if (text.length > 64 * 1024) return fail('请求内容过大', 413)
+    try {
+      body = text ? JSON.parse(text) : {}
+    } catch {
+      return fail('请求内容不是 JSON', 400)
+    }
+  }
+  let config = {
+    baseUrl: row.base_url,
+    secret: row.secret,
+    clientName: row.client_name,
+    clientVersion: row.client_version,
+    buildVersion: row.build_version,
+    protocolVersion: row.protocol_version
+  }
+  try {
+    let result = await kanjuRequest(config, pathWithQuery, method, body)
+    if ((result.response.status === 401 || result.response.status === 403) && row.auto_refresh) {
+      const recentFailure =
+        Date.now() - (row.last_check_at || 0) < 60 * 1000 && /401|403|验证失败|签名/.test(row.last_error || '')
+      const refreshed = recentFailure ? null : await refreshKanju(env, row, true)
+      if (refreshed) {
+        config = {
+          baseUrl: refreshed.baseUrl,
+          secret: refreshed.secret,
+          clientName: refreshed.clientName,
+          clientVersion: refreshed.clientVersion,
+          buildVersion: refreshed.buildVersion,
+          protocolVersion: refreshed.protocolVersion
+        }
+        result = await kanjuRequest(config, pathWithQuery, method, body)
+      }
+    }
+    if (!result.response.ok) {
+      await saveKanju(env, { lastCheckAt: Date.now(), lastError: `HTTP ${result.response.status}` })
+      return fail(`看剧AI 接口暂时不可用（HTTP ${result.response.status}）`, 502)
+    }
+    let payload
+    try {
+      payload = JSON.parse(result.text)
+    } catch {
+      return fail('看剧AI 返回内容不是 JSON', 502)
+    }
+    if (Date.now() - (row.last_ok_at || 0) > 5 * 60 * 1000) {
+      await saveKanju(env, { lastOkAt: Date.now(), lastCheckAt: Date.now(), lastError: '' })
+    }
+    return json(payload)
+  } catch (error) {
+    await saveKanju(env, {
+      lastCheckAt: Date.now(),
+      lastError: String(error?.message || error).slice(0, 200)
+    })
+    return fail('看剧AI 接口连接失败', 502)
+  }
+}
+
 
 async function currentUser(request, env) {
   const header = request.headers.get('authorization') || ''
@@ -648,6 +987,10 @@ async function handlePublic(segments, request, env) {
 
   if (segments[0] === 'config' && method === 'GET') {
     return json(await publicConfig(env))
+  }
+
+  if (segments[0] === 'kanju') {
+    return await handleKanjuProxy(segments, request, env)
   }
 
   if (segments[0] === 'internal' && segments[1] === 'health-sweep' && method === 'POST') {
@@ -1354,6 +1697,94 @@ async function handleAdmin(segments, request, env) {
       ])
       await audit(env, request, 'user.delete', row.username, '删除用户及其同步数据')
       return json({ ok: true })
+    }
+  }
+
+  if (area === 'kanju') {
+    if (method === 'GET') {
+      return json({ ok: true, kanju: kanjuInfo(await getKanju(env)) })
+    }
+    if (method === 'POST' && !id) {
+      let body
+      try {
+        body = await readBody(request)
+      } catch (error) {
+        return fail(error.message)
+      }
+      const target = clean(body.url, 300)
+      if (!target) return fail('请填写看剧AI 官网地址')
+      let found
+      try {
+        found = await discoverKanju(target)
+      } catch (error) {
+        await audit(env, request, 'kanju.discover', target, `失败：${String(error?.message || error).slice(0, 150)}`)
+        return fail(String(error?.message || error).slice(0, 200))
+      }
+      const now = Date.now()
+      await saveKanju(env, {
+        ...found,
+        enabled: 1,
+        autoRefresh: body.autoRefresh === false ? 0 : 1,
+        lastOkAt: now,
+        lastCheckAt: now,
+        lastError: '',
+        updatedAt: now
+      })
+      await audit(
+        env,
+        request,
+        'kanju.discover',
+        found.baseUrl,
+        `自动识别成功 · 密钥 ${found.secret.slice(0, 4)}…${found.secret.slice(-4)} · ${found.buildVersion || '默认构建标识'}`
+      )
+      return json({ ok: true, kanju: kanjuInfo(await getKanju(env)) })
+    }
+    if (method === 'POST' && id === 'refresh') {
+      const row = await getKanju(env)
+      if (!row?.base_url) return fail('还没有配置看剧AI 域名', 404)
+      let found
+      try {
+        found = await discoverKanju(row.base_url)
+      } catch (error) {
+        await saveKanju(env, { lastCheckAt: Date.now(), lastError: String(error?.message || error).slice(0, 200) })
+        await audit(env, request, 'kanju.refresh', row.base_url, `失败：${String(error?.message || error).slice(0, 150)}`)
+        return fail(String(error?.message || error).slice(0, 200))
+      }
+      const now = Date.now()
+      await saveKanju(env, {
+        ...found,
+        enabled: 1,
+        lastOkAt: now,
+        lastCheckAt: now,
+        lastError: '',
+        updatedAt: now
+      })
+      await audit(env, request, 'kanju.refresh', found.baseUrl, '重新识别签名成功')
+      return json({ ok: true, kanju: kanjuInfo(await getKanju(env)) })
+    }
+    if (method === 'PUT') {
+      const row = await getKanju(env)
+      if (!row?.base_url) return fail('还没有配置看剧AI 域名', 404)
+      let body
+      try {
+        body = await readBody(request)
+      } catch (error) {
+        return fail(error.message)
+      }
+      const patch = { updatedAt: Date.now() }
+      if (body.enabled !== undefined) patch.enabled = body.enabled ? 1 : 0
+      if (body.autoRefresh !== undefined) patch.autoRefresh = body.autoRefresh ? 1 : 0
+      await saveKanju(env, patch)
+      await audit(
+        env,
+        request,
+        'kanju.update',
+        row.base_url,
+        [body.enabled !== undefined ? (body.enabled ? '启用' : '停用') : '', body.autoRefresh !== undefined ? `自动刷新 ${body.autoRefresh ? '开' : '关'}` : '']
+          .filter(Boolean)
+          .join(' ')
+      )
+      return json({ ok: true, kanju: kanjuInfo(await getKanju(env)) })
     }
   }
 
