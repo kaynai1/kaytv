@@ -173,19 +173,25 @@ function renderOverview() {
     { label: '可用邀请码', value: overview.activeInvites || 0 },
     { label: '上次体检', value: overview.lastCheckAt ? fmtTime(overview.lastCheckAt, '—') : '未体检', small: true }
   ]
-  el('overview-cards').innerHTML = cards
-    .map(
-      (card) => `<div class="stat${card.hot ? ' hot' : ''}">
-        <b${card.small ? ' class="small-stat"' : ''}>${card.value}</b><span>${card.label}</span>
-      </div>`
-    )
-    .join('')
-  el('sweep-status').textContent = overview.lastCheckAt ? `上次体检 ${fmtTime(overview.lastCheckAt)}` : '还没有体检记录'
+  const overviewCards = el('overview-cards')
+  const sweepStatus = el('sweep-status')
+  if (overviewCards) {
+    overviewCards.innerHTML = cards
+      .map(
+        (card) => `<div class="stat${card.hot ? ' hot' : ''}">
+          <b${card.small ? ' class="small-stat"' : ''}>${card.value}</b><span>${card.label}</span>
+        </div>`
+      )
+      .join('')
+  }
+  if (sweepStatus) sweepStatus.textContent = overview.lastCheckAt ? `上次体检 ${fmtTime(overview.lastCheckAt)}` : '还没有体检记录'
 
   renderAlerts()
 
   const recent = state.users.slice(0, 6)
-  el('recent-users').innerHTML = recent.length
+  const recentUsers = el('recent-users')
+  if (recentUsers) {
+    recentUsers.innerHTML = recent.length
     ? recent
         .map(
           (user) => `<div class="row">
@@ -199,11 +205,14 @@ function renderOverview() {
         )
         .join('')
     : '<div class="empty">还没有用户注册。三端不登录也能正常看片，注册只用于收藏和进度云同步。</div>'
+  }
 }
 
 function renderAlerts() {
   const rows = state.alerts || []
-  el('alert-list').innerHTML = rows.length
+  const alertList = el('alert-list')
+  if (!alertList) return
+  alertList.innerHTML = rows.length
     ? rows
         .map(
           (row) => `<div class="row">
@@ -268,70 +277,111 @@ function sourceRow(row) {
 }
 
 function renderSources() {
-  const filter = el('source-filter').value
+  const filterEl = el('source-filter')
+  const filter = filterEl ? filterEl.value : ''
   const rows = state.sources.filter((row) => !filter || row.kind === filter)
-  el('source-list').innerHTML = rows.length
+  const sourceList = el('source-list')
+  if (!sourceList) return
+  sourceList.innerHTML = rows.length
     ? rows.map(sourceRow).join('')
     : '<div class="empty">还没有配置源。先添加一个影视源，三端同步后就能用它搜索播放。</div>'
 }
 
 function resetSourceForm() {
   state.editingSource = ''
-  el('source-form-title').textContent = '添加源'
-  el('source-reset').classList.add('hidden')
-  el('source-kind').value = 'vod'
-  el('source-name').value = ''
-  el('source-url').value = ''
-  el('source-type').value = ''
-  el('source-sort').value = '100'
-  el('source-expires').value = ''
-  el('source-note').value = ''
-  el('source-enabled').checked = true
-  el('source-error').textContent = ''
+  const formTitle = el('source-form-title')
+  const resetBtn = el('source-reset')
+  const kindSelect = el('source-kind')
+  const nameInput = el('source-name')
+  const urlInput = el('source-url')
+  const typeInput = el('source-type')
+  const sortInput = el('source-sort')
+  const expiresInput = el('source-expires')
+  const noteInput = el('source-note')
+  const enabledCheck = el('source-enabled')
+  const errorEl = el('source-error')
+  if (!formTitle || !kindSelect || !nameInput || !urlInput || !enabledCheck) return
+  formTitle.textContent = '添加源'
+  if (resetBtn) resetBtn.classList.add('hidden')
+  kindSelect.value = 'vod'
+  nameInput.value = ''
+  urlInput.value = ''
+  typeInput.value = ''
+  sortInput.value = '100'
+  expiresInput.value = ''
+  noteInput.value = ''
+  enabledCheck.checked = true
+  if (errorEl) errorEl.textContent = ''
 }
 
 function editSource(id) {
   const row = state.sources.find((item) => item.id === id)
   if (!row) return
   state.editingSource = id
-  el('source-form-title').textContent = `编辑「${row.name}」`
-  el('source-reset').classList.remove('hidden')
-  el('source-kind').value = row.kind
-  el('source-name').value = row.name
-  el('source-url').value = row.url
-  el('source-type').value = row.type || ''
-  el('source-sort').value = String(row.sort ?? 100)
-  el('source-expires').value = fmtDateInput(row.expires_at)
-  el('source-note').value = row.note || ''
-  el('source-enabled').checked = Boolean(row.enabled)
-  el('source-error').textContent = ''
+  const formTitle = el('source-form-title')
+  const resetBtn = el('source-reset')
+  const kindSelect = el('source-kind')
+  const nameInput = el('source-name')
+  const urlInput = el('source-url')
+  const typeInput = el('source-type')
+  const sortInput = el('source-sort')
+  const expiresInput = el('source-expires')
+  const noteInput = el('source-note')
+  const enabledCheck = el('source-enabled')
+  const errorEl = el('source-error')
+  if (!formTitle || !kindSelect || !nameInput || !urlInput || !enabledCheck) return
+  formTitle.textContent = `编辑「${row.name}」`
+  if (resetBtn) resetBtn.classList.remove('hidden')
+  kindSelect.value = row.kind
+  nameInput.value = row.name
+  urlInput.value = row.url
+  typeInput.value = row.type || ''
+  sortInput.value = String(row.sort ?? 100)
+  expiresInput.value = fmtDateInput(row.expires_at)
+  noteInput.value = row.note || ''
+  enabledCheck.checked = Boolean(row.enabled)
+  if (errorEl) errorEl.textContent = ''
   el('panel-sources').scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
 async function submitSource(event) {
   event.preventDefault()
+  const kindEl = el('source-kind')
+  const nameEl = el('source-name')
+  const urlEl = el('source-url')
+  const typeEl = el('source-type')
+  const sortEl = el('source-sort')
+  const expiresEl = el('source-expires')
+  const noteEl = el('source-note')
+  const enabledEl = el('source-enabled')
+  const errorEl = el('source-error')
+  if (!kindEl || !nameEl || !urlEl || !enabledEl) return
   const payload = {
-    kind: el('source-kind').value,
-    name: el('source-name').value.trim(),
-    url: el('source-url').value.trim(),
-    type: el('source-type').value.trim(),
-    sort: Number(el('source-sort').value) || 100,
-    expiresAt: el('source-expires').value ? new Date(el('source-expires').value).getTime() : 0,
-    note: el('source-note').value.trim(),
-    enabled: el('source-enabled').checked
+    kind: kindEl.value,
+    name: nameEl.value.trim(),
+    url: urlEl.value.trim(),
+    type: typeEl.value.trim(),
+    sort: Number(sortEl.value) || 100,
+    expiresAt: expiresEl.value ? new Date(expiresEl.value).getTime() : 0,
+    note: noteEl.value.trim(),
+    enabled: enabledEl.checked
   }
   if (!payload.name || !payload.url) {
-    el('source-error').textContent = '名称和接口地址都要填'
+    if (errorEl) errorEl.textContent = '名称和接口地址都要填'
     return
   }
   try {
-    if (state.editingSource) await api(`/admin/sources/${state.editingSource}`, { method: 'PUT', body: JSON.stringify(payload) })
-    else await api('/admin/sources', { method: 'POST', body: JSON.stringify(payload) })
-    toast(state.editingSource ? '源已更新' : '源已添加')
+    if (state.editingSource) {
+      await api(`/admin/sources/${state.editingSource}`, { method: 'PUT', body: JSON.stringify(payload) })
+      toast('源已更新')
+    } else {
+      const data = await api('/admin/sources', { method: 'POST', body: JSON.stringify(payload) })
+      toast(data.expanded ? `JS 插件已展开为 ${data.added.length} 个采集接口` : '源已添加')
+    }
     resetSourceForm()
     await loadAll()
   } catch (error) {
-    el('source-error').textContent = error.message
+    if (errorEl) errorEl.textContent = error.message
   }
 }
 
@@ -396,21 +446,23 @@ async function bulkAdd() {
   const button = el('bulk-add')
   button.disabled = true
   let added = 0
+  let expanded = 0
   let failed = 0
   for (const item of lines) {
     try {
-      await api('/admin/sources', {
+      const data = await api('/admin/sources', {
         method: 'POST',
         body: JSON.stringify({ kind, name: item.name, url: item.url, enabled: true })
       })
-      added += 1
+      if (data.expanded) expanded += (data.added || []).length
+      else added += 1
     } catch {
       failed += 1
     }
   }
   button.disabled = false
-  el('bulk-result').textContent = `添加完成：成功 ${added} 个${failed ? `，失败 ${failed} 个` : ''}`
-  if (added) {
+  el('bulk-result').textContent = `添加完成：成功 ${added} 个${expanded ? `，JS 插件另展开 ${expanded} 个采集接口` : ''}${failed ? `，失败 ${failed} 个` : ''}`
+  if (added || expanded) {
     el('bulk-text').value = ''
     await loadAll()
   }
@@ -423,6 +475,7 @@ function renderKanju() {
   const toggle = el('kanju-toggle')
   const refresh = el('kanju-refresh')
   const auto = el('kanju-auto-refresh')
+  if (!badge || !toggle || !refresh || !auto) return
   if (!info) {
     badge.className = 'tag'
     badge.textContent = '未配置'
@@ -556,55 +609,88 @@ function annRow(row) {
 }
 
 function renderAnnouncements() {
-  el('ann-list').innerHTML = state.announcements.length
+  const annList = el('ann-list')
+  if (!annList) return
+  annList.innerHTML = state.announcements.length
     ? state.announcements.map(annRow).join('')
     : '<div class="empty">还没有公告。</div>'
 }
 
 function resetAnnForm() {
   state.editingAnnouncement = ''
-  el('ann-form-title').textContent = '发布公告'
-  el('ann-reset').classList.add('hidden')
-  el('ann-title').value = ''
-  el('ann-body').value = ''
-  el('ann-level').value = 'info'
-  el('ann-link').value = ''
-  el('ann-start').value = ''
-  el('ann-end').value = ''
-  el('ann-active').checked = true
-  el('ann-error').textContent = ''
+  const formTitle = el('ann-form-title')
+  const resetBtn = el('ann-reset')
+  const titleInput = el('ann-title')
+  const bodyInput = el('ann-body')
+  const levelSelect = el('ann-level')
+  const linkInput = el('ann-link')
+  const startInput = el('ann-start')
+  const endInput = el('ann-end')
+  const activeCheck = el('ann-active')
+  const errorEl = el('ann-error')
+  if (!formTitle || !titleInput || !bodyInput || !activeCheck) return
+  formTitle.textContent = '发布公告'
+  if (resetBtn) resetBtn.classList.add('hidden')
+  titleInput.value = ''
+  bodyInput.value = ''
+  levelSelect.value = 'info'
+  linkInput.value = ''
+  startInput.value = ''
+  endInput.value = ''
+  activeCheck.checked = true
+  if (errorEl) errorEl.textContent = ''
 }
 
 function editAnnouncement(id) {
   const row = state.announcements.find((item) => item.id === id)
   if (!row) return
   state.editingAnnouncement = id
-  el('ann-form-title').textContent = '编辑公告'
-  el('ann-reset').classList.remove('hidden')
-  el('ann-title').value = row.title
-  el('ann-body').value = row.body || ''
-  el('ann-level').value = row.level || 'info'
-  el('ann-link').value = row.link || ''
-  el('ann-start').value = fmtDateInput(row.starts_at)
-  el('ann-end').value = fmtDateInput(row.ends_at)
-  el('ann-active').checked = Boolean(row.active)
-  el('ann-error').textContent = ''
+  const formTitle = el('ann-form-title')
+  const resetBtn = el('ann-reset')
+  const titleInput = el('ann-title')
+  const bodyInput = el('ann-body')
+  const levelSelect = el('ann-level')
+  const linkInput = el('ann-link')
+  const startInput = el('ann-start')
+  const endInput = el('ann-end')
+  const activeCheck = el('ann-active')
+  const errorEl = el('ann-error')
+  if (!formTitle || !titleInput || !bodyInput || !activeCheck) return
+  formTitle.textContent = '编辑公告'
+  if (resetBtn) resetBtn.classList.remove('hidden')
+  titleInput.value = row.title
+  bodyInput.value = row.body || ''
+  levelSelect.value = row.level || 'info'
+  linkInput.value = row.link || ''
+  startInput.value = fmtDateInput(row.starts_at)
+  endInput.value = fmtDateInput(row.ends_at)
+  activeCheck.checked = Boolean(row.active)
+  if (errorEl) errorEl.textContent = ''
   el('panel-announcements').scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
 async function submitAnnouncement(event) {
   event.preventDefault()
+  const titleEl = el('ann-title')
+  const bodyEl = el('ann-body')
+  const levelEl = el('ann-level')
+  const linkEl = el('ann-link')
+  const startEl = el('ann-start')
+  const endEl = el('ann-end')
+  const activeEl = el('ann-active')
+  const errorEl = el('ann-error')
+  if (!titleEl || !bodyEl || !activeEl) return
   const payload = {
-    title: el('ann-title').value.trim(),
-    body: el('ann-body').value.trim(),
-    level: el('ann-level').value,
-    link: el('ann-link').value.trim(),
-    startsAt: el('ann-start').value ? new Date(el('ann-start').value).getTime() : 0,
-    endsAt: el('ann-end').value ? new Date(el('ann-end').value).getTime() : 0,
-    active: el('ann-active').checked
+    title: titleEl.value.trim(),
+    body: bodyEl.value.trim(),
+    level: levelEl.value,
+    link: linkEl.value.trim(),
+    startsAt: startEl.value ? new Date(startEl.value).getTime() : 0,
+    endsAt: endEl.value ? new Date(endEl.value).getTime() : 0,
+    active: activeEl.checked
   }
   if (!payload.title) {
-    el('ann-error').textContent = '请填写公告标题'
+    if (errorEl) errorEl.textContent = '请填写公告标题'
     return
   }
   try {
@@ -663,7 +749,9 @@ function userRow(row) {
 }
 
 function renderUsers() {
-  el('user-list').innerHTML = state.users.length
+  const userList = el('user-list')
+  if (!userList) return
+  userList.innerHTML = state.users.length
     ? state.users.map(userRow).join('')
     : '<div class="empty">还没有用户注册。</div>'
 }
@@ -741,7 +829,9 @@ function inviteRow(row) {
 }
 
 function renderInvites() {
-  el('invite-list').innerHTML = state.invites.length
+  const inviteList = el('invite-list')
+  if (!inviteList) return
+  inviteList.innerHTML = state.invites.length
     ? state.invites.map(inviteRow).join('')
     : '<div class="empty">还没有邀请码。上方填数量生成，注册模式切到「需要邀请码」后生效。</div>'
 }
@@ -813,7 +903,9 @@ function feedbackRow(row) {
 }
 
 function renderFeedback() {
-  el('feedback-list').innerHTML = state.feedback.length
+  const feedbackList = el('feedback-list')
+  if (!feedbackList) return
+  feedbackList.innerHTML = state.feedback.length
     ? state.feedback.map(feedbackRow).join('')
     : '<div class="empty">这个筛选下没有反馈。</div>'
 }
@@ -878,7 +970,9 @@ const AUDIT_LABEL = {
 }
 
 function renderAudit() {
-  el('audit-list').innerHTML = state.audit.length
+  const auditList = el('audit-list')
+  if (!auditList) return
+  auditList.innerHTML = state.audit.length
     ? state.audit
         .map(
           (row) => `<div class="row">
@@ -956,26 +1050,40 @@ async function resolveAllAlerts() {
 /* ---------- 设置 ---------- */
 function renderSettings() {
   if (!state.settings) return
-  el('set-site-name').value = state.settings.siteName || 'KayTV'
-  el('set-reg-mode').value = state.settings.registrationMode || (state.settings.registrationOpen ? 'open' : 'closed')
-  el('set-auto-approve').checked = Boolean(state.settings.autoApprove)
-  el('set-min-version').value = state.settings.minVersion || ''
-  el('set-update-url').value = state.settings.updateUrl || ''
-  el('set-fail-threshold').value = String(state.settings.failThreshold || 2)
+  const siteNameInput = el('set-site-name')
+  const regModeSelect = el('set-reg-mode')
+  const autoApproveCheck = el('set-auto-approve')
+  const minVersionInput = el('set-min-version')
+  const updateUrlInput = el('set-update-url')
+  const failThresholdInput = el('set-fail-threshold')
+  if (!siteNameInput || !regModeSelect || !autoApproveCheck) return
+  siteNameInput.value = state.settings.siteName || 'KayTV'
+  regModeSelect.value = state.settings.registrationMode || (state.settings.registrationOpen ? 'open' : 'closed')
+  autoApproveCheck.checked = Boolean(state.settings.autoApprove)
+  minVersionInput.value = state.settings.minVersion || ''
+  updateUrlInput.value = state.settings.updateUrl || ''
+  failThresholdInput.value = String(state.settings.failThreshold || 2)
 }
 
 async function submitSettings(event) {
   event.preventDefault()
+  const siteNameEl = el('set-site-name')
+  const regModeEl = el('set-reg-mode')
+  const autoApproveEl = el('set-auto-approve')
+  const minVersionEl = el('set-min-version')
+  const updateUrlEl = el('set-update-url')
+  const failThresholdEl = el('set-fail-threshold')
+  if (!siteNameEl || !regModeEl || !autoApproveEl) return
   try {
     const data = await api('/admin/settings', {
       method: 'PUT',
       body: JSON.stringify({
-        siteName: el('set-site-name').value.trim(),
-        registrationMode: el('set-reg-mode').value,
-        autoApprove: el('set-auto-approve').checked,
-        minVersion: el('set-min-version').value.trim(),
-        updateUrl: el('set-update-url').value.trim(),
-        failThreshold: Number(el('set-fail-threshold').value) || 2
+        siteName: siteNameEl.value.trim(),
+        registrationMode: regModeEl.value,
+        autoApprove: autoApproveEl.checked,
+        minVersion: minVersionEl.value.trim(),
+        updateUrl: updateUrlEl.value.trim(),
+        failThreshold: Number(failThresholdEl.value) || 2
       })
     })
     state.settings = data.settings || state.settings
@@ -1080,44 +1188,66 @@ function bindEvents() {
     const toggle = event.target.closest('[data-action="source-toggle"]')
     if (toggle) void toggleSource(toggle.dataset.id, toggle.checked)
   })
-  el('source-form').addEventListener('submit', (event) => void submitSource(event))
-  el('source-reset').addEventListener('click', resetSourceForm)
-  el('source-refresh').addEventListener('click', () => void loadAll())
-  el('source-filter').addEventListener('change', renderSources)
-  el('bulk-add').addEventListener('click', () => void bulkAdd())
-  el('sweep-run').addEventListener('click', (event) => void runSweep(event.currentTarget))
-  el('alerts-resolve').addEventListener('click', () => void resolveAllAlerts())
-  el('ann-form').addEventListener('submit', (event) => void submitAnnouncement(event))
-  el('ann-reset').addEventListener('click', resetAnnForm)
-  el('user-refresh').addEventListener('click', () => void loadUsers())
-  el('user-search').addEventListener('keydown', (event) => {
+  const sourceForm = el('source-form')
+  const sourceReset = el('source-reset')
+  const sourceRefresh = el('source-refresh')
+  const sourceFilter = el('source-filter')
+  const bulkAddBtn = el('bulk-add')
+  const sweepRun = el('sweep-run')
+  const alertsResolve = el('alerts-resolve')
+  const annForm = el('ann-form')
+  const annReset = el('ann-reset')
+  const userRefresh = el('user-refresh')
+  if (sourceForm) sourceForm.addEventListener('submit', (event) => void submitSource(event))
+  if (sourceReset) sourceReset.addEventListener('click', resetSourceForm)
+  if (sourceRefresh) sourceRefresh.addEventListener('click', () => void loadAll())
+  if (sourceFilter) sourceFilter.addEventListener('change', renderSources)
+  if (bulkAddBtn) bulkAddBtn.addEventListener('click', () => void bulkAdd())
+  if (sweepRun) sweepRun.addEventListener('click', (event) => void runSweep(event.currentTarget))
+  if (alertsResolve) alertsResolve.addEventListener('click', () => void resolveAllAlerts())
+  if (annForm) annForm.addEventListener('submit', (event) => void submitAnnouncement(event))
+  if (annReset) annReset.addEventListener('click', resetAnnForm)
+  if (userRefresh) userRefresh.addEventListener('click', () => void loadUsers())
+  const userSearch = el('user-search')
+  const inviteForm = el('invite-form')
+  const inviteRefresh = el('invite-refresh')
+  const feedbackFilter = el('feedback-filter')
+  const feedbackRefresh = el('feedback-refresh')
+  const auditRefresh = el('audit-refresh')
+  const auditSearch = el('audit-search')
+  const kanjuForm = el('kanju-form')
+  const kanjuRefresh = el('kanju-refresh')
+  const kanjuToggle = el('kanju-toggle')
+  const kanjuAutoRefresh = el('kanju-auto-refresh')
+  const settingsForm = el('settings-form')
+  if (userSearch) userSearch.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') {
       event.preventDefault()
       void loadUsers()
     }
   })
-  el('invite-form').addEventListener('submit', (event) => void submitInvite(event))
-  el('invite-refresh').addEventListener('click', () => void loadAll())
-  el('feedback-filter').addEventListener('change', () => void loadFeedback())
-  el('feedback-refresh').addEventListener('click', () => void loadFeedback())
-  el('audit-refresh').addEventListener('click', () => void loadAudit())
-  el('audit-search').addEventListener('keydown', (event) => {
+  if (inviteForm) inviteForm.addEventListener('submit', (event) => void submitInvite(event))
+  if (inviteRefresh) inviteRefresh.addEventListener('click', () => void loadAll())
+  if (feedbackFilter) feedbackFilter.addEventListener('change', () => void loadFeedback())
+  if (feedbackRefresh) feedbackRefresh.addEventListener('click', () => void loadFeedback())
+  if (auditRefresh) auditRefresh.addEventListener('click', () => void loadAudit())
+  if (auditSearch) auditSearch.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') {
       event.preventDefault()
       void loadAudit()
     }
   })
-  el('kanju-form').addEventListener('submit', (event) => void submitKanju(event))
-  el('kanju-refresh').addEventListener('click', () => void refreshKanjuConfig())
-  el('kanju-toggle').addEventListener('click', () => {
+  if (kanjuForm) kanjuForm.addEventListener('submit', (event) => void submitKanju(event))
+  if (kanjuRefresh) kanjuRefresh.addEventListener('click', () => void refreshKanjuConfig())
+  if (kanjuToggle) kanjuToggle.addEventListener('click', () => {
     const info = state.kanju
     if (!info?.configured) return
     void updateKanju({ enabled: !info.enabled })
   })
-  el('kanju-auto-refresh').addEventListener('change', (event) => {
+  if (kanjuAutoRefresh) kanjuAutoRefresh.addEventListener('change', (event) => {
     void updateKanju({ autoRefresh: event.target.checked })
   })
-  el('settings-form').addEventListener('submit', (event) => void submitSettings(event))
+  if (settingsForm) settingsForm.addEventListener('submit', (event) => void submitSettings(event))
 }
 
 bindEvents()

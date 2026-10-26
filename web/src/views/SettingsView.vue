@@ -885,7 +885,7 @@ onMounted(async () => {
           <div>
             <h2 class="panel-title">自定义 TVBox 接口</h2>
             <p class="panel-desc">
-              粘贴 TVBox 订阅集合（tv.json）、TVBox 配置、m3u/txt 直播列表或苹果CMS 采集接口地址，解析后可挑选添加；添加的源出现在直播页/搜索页并可用「检测源」验证。XPTV/TVBox 的 JS 插件脚本（.js / .js.md5）需要专用运行环境，无法直接接入。
+              粘贴 TVBox 订阅集合（tv.json）、TVBox 配置、m3u/txt 直播列表或苹果CMS 采集接口地址，解析后可挑选添加；添加的源出现在直播页/搜索页并可用「检测源」验证。XPTV/TVBox 的 JS 插件脚本（.js / .js.md5）会尝试提取其中的采集接口，提取成功可直接使用，失败则无法接入。
             </p>
           </div>
         </div>

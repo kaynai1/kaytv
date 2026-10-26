@@ -23,6 +23,9 @@ interface ImportStats {
 
 const FETCH_TIMEOUT = 14000
 const MAX_BODY = 3 * 1024 * 1024
+/** 插件脚本动辄几 MB，单独放宽限制，只扫描前 PLUGIN_MAX_BODY 就够提取接口了 */
+const PLUGIN_FETCH_TIMEOUT = 30000
+const PLUGIN_MAX_BODY = 12 * 1024 * 1024
 const MAX_LIVE_CANDIDATES = 16
 const MAX_VOD_CANDIDATES = 24
 const MAX_CHILD_CONFIGS = 10
@@ -34,7 +37,49 @@ const PLUGIN_PATH_RE = /\.(?:js|js\.md5|md5)$/i
 const MD5_ONLY_RE = /^[a-f0-9]{32}$/i
 const PLUGIN_BODY_RE = /module\.exports|globalThis\.__filename|js2p:\/\//i
 
-const PLUGIN_HINT = '这是 XPTV/TVBox 的 JS 插件（或它的 .md5 版本文件），需要专用运行环境，KayTV 无法直接加载；请改填它的 TVBox 配置 JSON、m3u/txt 直播列表或苹果CMS 采集接口'
+const PLUGIN_HINT = '这个 JS 插件里没有找到可用的苹果CMS 采集接口；插件本身需要专用运行环境，KayTV 无法直接加载。请改填它的 TVBox 配置 JSON、m3u/txt 直播列表或采集接口地址'
+
+interface ExtractedApi {
+  url: string
+}
+
+const NON_API_HOST_RE =
+  /(?:^|\.)(?:example\.(?:com|org|net)|localhost|127\.0\.0\.1|api\.cloudflare\.com|api\.vercel\.com|api\.netlify\.com|huggingface\.co|github\.com|raw\.githubusercontent\.com|gitee\.com)$/i
+
+function isUsableApiUrl(raw: string): boolean {
+  try {
+    const parsed = new URL(raw)
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false
+    if (!parsed.hostname || !parsed.hostname.includes('.')) return false
+    return !NON_API_HOST_RE.test(parsed.hostname)
+  } catch {
+    return false
+  }
+}
+
+function extractMacCmsFromJs(jsCode: string): ExtractedApi[] {
+  const apis: ExtractedApi[] = []
+  const seen = new Set<string>()
+
+  const patterns = [
+    /['"`](https?:\/\/[^'"`\s]+\/api\.php\/provide\/vod)[^'"`\s]*['"`]/gi,
+    /['"`](https?:\/\/[^'"`\s]+\/mac_cms)[^'"`\s]*['"`]/gi,
+    /['"`](https?:\/\/[^'"`\s]+\/index\.php\/vod)[^'"`\s]*['"`]/gi,
+  ]
+
+  for (const pattern of patterns) {
+    let match
+    while ((match = pattern.exec(jsCode)) !== null) {
+      const url = match[1].replace(/\/+$/, '')
+      if (!seen.has(url) && isUsableApiUrl(url)) {
+        seen.add(url)
+        apis.push({ url })
+      }
+    }
+  }
+
+  return apis.slice(0, 5)
+}
 
 function looksLikePlaylistText(text: string): boolean {
   const head = text.slice(0, 2000)
@@ -50,6 +95,45 @@ function isPluginUrl(raw: string): boolean {
     /* 原样匹配 */
   }
   return PLUGIN_PATH_RE.test(pathname)
+}
+
+/** .md5 文件只有一行哈希，去掉后缀再取真正的 JS 源码 */
+async function fetchPluginCode(url: string): Promise<string> {
+  let text = await fetchPluginText(url)
+  let pathname = url
+  try {
+    pathname = new URL(url).pathname
+  } catch {
+    /* 原样判断 */
+  }
+  if (/\.md5$/i.test(pathname) || MD5_ONLY_RE.test(text.trim())) {
+    const jsUrl = url.replace(/\.md5$/i, '')
+    if (jsUrl !== url) {
+      try {
+        text = await fetchPluginText(jsUrl)
+      } catch {
+        /* 保持原文本，走后续的不可用提示 */
+      }
+    }
+  }
+  return text
+}
+
+async function fetchPluginText(url: string): Promise<string> {
+  const controller = new AbortController()
+  const timer = window.setTimeout(() => controller.abort(), PLUGIN_FETCH_TIMEOUT)
+  try {
+    const response = await fetch(url, {
+      headers: { accept: '*/*' },
+      referrerPolicy: 'no-referrer',
+      signal: controller.signal
+    })
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    const text = await response.text()
+    return text.length > PLUGIN_MAX_BODY ? text.slice(0, PLUGIN_MAX_BODY) : text
+  } finally {
+    window.clearTimeout(timer)
+  }
 }
 
 function githubMirror(url: string): string {
@@ -241,6 +325,30 @@ function playlistType(raw: string): 'auto' | 'm3u' | 'txt' {
   return match[1].toLowerCase().startsWith('m3u') ? 'm3u' : 'txt'
 }
 
+/** 采集接口没有自带名称时，用域名当名字比文件名清楚 */
+function hostOf(raw: string): string {
+  try {
+    return new URL(raw).hostname.replace(/^www\./i, '')
+  } catch {
+    return ''
+  }
+}
+
+/** 苹果CMS 采集接口的响应特征：list 里是 vod_* 字段，或 class 里是 type_* 字段 */
+function isMacCmsPayload(json: Record<string, unknown>): boolean {
+  const list = readArray(json.list)
+  if (list.length) {
+    const first = list[0]
+    if (first && typeof first === 'object' && ('vod_id' in first || 'vod_name' in first)) return true
+  }
+  const classes = readArray(json.class)
+  if (classes.length) {
+    const first = classes[0]
+    if (first && typeof first === 'object' && ('type_id' in first || 'type_name' in first)) return true
+  }
+  return false
+}
+
 function normalizeVodApi(raw: string, base: string): string {
   let api = raw.trim()
   if (!api) return ''
@@ -373,20 +481,32 @@ async function expandChild(
 
 export async function importTvboxSource(rawInput: string): Promise<ImportResult> {
   const input = String(rawInput || '').trim()
-  if (isPluginUrl(input)) throw new Error(PLUGIN_HINT)
-  if (!/^https?:\/\//i.test(input)) throw new Error('请输入 http(s) 接口地址')
+  const isPlugin = isPluginUrl(input)
+  if (!isPlugin && !/^https?:\/\//i.test(input)) throw new Error('请输入 http(s) 接口地址')
   const url = githubMirror(input)
   const fileName = url.split('/').pop()?.split('?')[0] || '自定义源'
   const live: ImportCandidate[] = []
   const vod: ImportCandidate[] = []
   const stats: ImportStats = { skipped: 0 }
 
-  const text = await fetchText(url)
+  const text = isPlugin ? await fetchPluginCode(url) : await fetchText(url)
   const trimmed = text.trim()
   if (MD5_ONLY_RE.test(trimmed)) {
+    if (isPlugin) throw new Error('插件脚本本体没能取到（只有版本哈希），多半是网络不通或被墙，请换网络重试或改填它的配置 JSON 地址')
     throw new Error('该地址只返回一个 MD5 校验值，是插件/订阅的版本文件，不是可用的源；请填真正的配置或接口地址')
   }
-  if (!trimmed.startsWith('{') && !trimmed.startsWith('[') && !looksLikePlaylistText(text) && PLUGIN_BODY_RE.test(text.slice(0, 4000))) {
+
+  if (isPlugin || (!trimmed.startsWith('{') && !trimmed.startsWith('[') && !looksLikePlaylistText(text) && PLUGIN_BODY_RE.test(text.slice(0, 4000)))) {
+    const extracted = extractMacCmsFromJs(text)
+    if (extracted.length > 0) {
+      for (const api of extracted) {
+        const normalized = normalizeVodApi(api.url, url)
+        takeVod(vod, hostOf(normalized) || fileName, normalized, url, '从 JS 插件提取的采集接口')
+      }
+      if (vod.length > 0) {
+        return { label: fileName, live, vod, skipped: 0 }
+      }
+    }
     throw new Error(PLUGIN_HINT)
   }
 
@@ -400,6 +520,11 @@ export async function importTvboxSource(rawInput: string): Promise<ImportResult>
   }
 
   const json = parseTolerantJson(text)
+  if (json && isMacCmsPayload(json)) {
+    const label = str(json.name) || hostOf(url) || fileName
+    takeVod(vod, label, url, url, '采集接口')
+    if (vod.length) return { label, live, vod, skipped: 0 }
+  }
   if (!json) {
     if (looksLikePlaylistText(text)) {
       takeLive(live, fileName, url, url, '直播列表')
@@ -407,7 +532,7 @@ export async function importTvboxSource(rawInput: string): Promise<ImportResult>
     }
     if (/api\.php|provide\/vod/i.test(url)) {
       const api = normalizeVodApi(url, url)
-      takeVod(vod, fileName, api, url, '采集接口')
+      takeVod(vod, hostOf(url) || fileName, api, url, '采集接口')
       if (!vod.length) throw new Error('无法识别该接口内容')
       return { label: fileName, live, vod, skipped: 0 }
     }

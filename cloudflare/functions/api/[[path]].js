@@ -822,6 +822,86 @@ function parseTvboxConfig(text) {
   return null
 }
 
+const NON_API_HOST_RE =
+  /(?:^|\.)(?:example\.(?:com|org|net)|localhost|127\.0\.0\.1|api\.cloudflare\.com|api\.vercel\.com|api\.netlify\.com|huggingface\.co|github\.com|raw\.githubusercontent\.com|gitee\.com)$/i
+
+function isUsableApiUrl(raw) {
+  try {
+    const parsed = new URL(raw)
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false
+    if (!parsed.hostname || !parsed.hostname.includes('.')) return false
+    return !NON_API_HOST_RE.test(parsed.hostname)
+  } catch {
+    return false
+  }
+}
+
+function extractMacCmsFromJs(jsCode) {
+  const apis = []
+  const seen = new Set()
+
+  const patterns = [
+    /['"`](https?:\/\/[^'"`\s]+\/api\.php\/provide\/vod)[^'"`\s]*['"`]/gi,
+    /['"`](https?:\/\/[^'"`\s]+\/mac_cms)[^'"`\s]*['"`]/gi,
+    /['"`](https?:\/\/[^'"`\s]+\/index\.php\/vod)[^'"`\s]*['"`]/gi,
+  ]
+
+  for (const pattern of patterns) {
+    let match
+    while ((match = pattern.exec(jsCode)) !== null) {
+      const url = match[1].replace(/\/+$/, '')
+      if (!seen.has(url) && isUsableApiUrl(url)) {
+        seen.add(url)
+        apis.push({ url })
+      }
+    }
+  }
+
+  return apis.slice(0, 5)
+}
+
+function isPluginFileUrl(raw) {
+  try {
+    return /\.(?:js|js\.md5|md5)$/i.test(new URL(raw).pathname)
+  } catch {
+    return false
+  }
+}
+
+/** .md5 文件只存一行哈希，需要去掉后缀再取真正的 JS 源码 */
+async function fetchPluginText(rawUrl) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 12000)
+  const headers = { accept: '*/*', 'user-agent': 'KayTV-Hub/1.0 (+https://github.com/kaynai1/kaytv)' }
+  const get = async (url) => {
+    const response = await fetch(url, { headers, redirect: 'follow', signal: controller.signal })
+    return response.ok ? response.text() : ''
+  }
+  try {
+    let text = await get(rawUrl)
+    if (!text) return ''
+    let pathname = rawUrl
+    try {
+      pathname = new URL(rawUrl).pathname
+    } catch {
+      /* 保持原样 */
+    }
+    const hashOnly = /^[a-f0-9]{32}$/i.test(text.trim())
+    if (/\.md5$/i.test(pathname) || hashOnly) {
+      const jsUrl = rawUrl.replace(/\.md5$/i, '')
+      if (jsUrl !== rawUrl) {
+        const jsText = await get(jsUrl)
+        if (jsText) text = jsText
+      }
+    }
+    return text
+  } catch {
+    return ''
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 function isPlayableHttp(raw) {
   const value = String(raw || '')
   if (!/^https?:\/\//i.test(value)) return false
@@ -921,7 +1001,7 @@ async function probeSource(row) {
     })
     const ms = Date.now() - started
     if (!response.ok) return { ok: false, ms, note: `HTTP ${response.status}` }
-    const text = await response.text()
+    let text = await response.text()
     const trimmed = text.trim()
     let pathname = ''
     try {
@@ -929,8 +1009,36 @@ async function probeSource(row) {
     } catch {
       /* 已在入库时校验过 http(s) */
     }
+    // If it's a .md5 file or just an MD5 hash, fetch the actual .js file
+    let actualUrl = row.url
+    if (/\.md5$/i.test(pathname) || /^[a-f0-9]{32}$/i.test(trimmed)) {
+      actualUrl = row.url.replace(/\.md5$/i, '')
+      try {
+        const jsResponse = await fetch(actualUrl, {
+          headers: {
+            accept: '*/*',
+            'user-agent': 'KayTV-Hub/1.0 (+https://github.com/kaynai1/kaytv)'
+          },
+          redirect: 'follow',
+          signal: controller.signal
+        })
+        if (jsResponse.ok) {
+          text = await jsResponse.text()
+        }
+      } catch {
+        /* 保持原文本 */
+      }
+    }
     if (/\.(?:js|js\.md5|md5)$/i.test(pathname) || /^[a-f0-9]{32}$/i.test(trimmed)) {
-      return { ok: false, ms, note: '这是 XPTV/TVBox 的 JS 插件文件，需要专用内核，无法直接展开' }
+      const extracted = extractMacCmsFromJs(text)
+      if (extracted.length > 0) {
+        return {
+          ok: false,
+          ms,
+          note: `JS 插件本身不能直接播放；删除本源并重新添加该地址会自动展开为 ${extracted.length} 个采集接口：${extracted.map((e) => e.url).join(', ')}`
+        }
+      }
+      return { ok: false, ms, note: 'JS 插件里没有找到可用的采集接口，需要专用内核执行，无法直接展开' }
     }
     if (row.kind === 'vod') {
       let payload = null
@@ -1491,6 +1599,43 @@ async function handleAdmin(segments, request, env) {
       const type = clean(body.type, 20) || (kind === 'vod' ? 'maccms' : kind === 'live' ? 'auto' : 'config')
       const now = Date.now()
       const rowId = crypto.randomUUID()
+      // JS 插件无法直接播放：入库时展开成其中的采集接口，否则这一行永远是死源
+      if (isPluginFileUrl(url)) {
+        const pluginText = await fetchPluginText(url)
+        const extracted = pluginText ? extractMacCmsFromJs(pluginText) : []
+        if (extracted.length) {
+          const added = []
+          for (const api of extracted) {
+            const exists = await env.DB.prepare('SELECT id FROM sources WHERE url = ?1').bind(api.url).first()
+            if (exists) continue
+            await env.DB.prepare(
+              `INSERT INTO sources (id, kind, name, url, type, note, enabled, sort, expires_at, created_at, updated_at)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`
+            )
+              .bind(
+                crypto.randomUUID(),
+                'vod',
+                name,
+                api.url,
+                'maccms',
+                `从 JS 插件展开：${url}`,
+                body.enabled === false ? 0 : 1,
+                toInt(body.sort, 100),
+                0,
+                now,
+                now
+              )
+              .run()
+            added.push(api.url)
+          }
+          if (added.length) {
+            await audit(env, request, 'source.create', name, `JS 插件展开 ${added.length} 个采集接口`)
+            return json({ ok: true, expanded: true, added, message: `未直接保存 JS 插件，已展开为 ${added.length} 个采集接口` })
+          }
+          await audit(env, request, 'source.create', name, `JS 插件展开的 ${extracted.length} 个采集接口已存在`)
+          return json({ ok: true, expanded: true, added: [], message: '该插件里的采集接口都已经在源列表里了' })
+        }
+      }
       await env.DB.prepare(
         `INSERT INTO sources (id, kind, name, url, type, note, enabled, sort, expires_at, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`
