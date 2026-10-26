@@ -5,6 +5,7 @@ import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.database.ContentObserver;
 import android.media.AudioManager;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -22,6 +23,7 @@ public class MainActivity extends BridgeActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        drawUnderCutout();
         Bridge bridge = getBridge();
         WebView webView = bridge == null ? null : bridge.getWebView();
         if (webView != null) {
@@ -39,6 +41,18 @@ public class MainActivity extends BridgeActivity {
             nativeBridge.stopObserving();
         }
         super.onDestroy();
+    }
+
+    /** 挖孔/刘海屏横屏时让画面延伸到挖孔一侧，否则全屏左边会留一条系统灰边 */
+    private void drawUnderCutout() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O_MR1) return;
+        try {
+            WindowManager.LayoutParams attrs = getWindow().getAttributes();
+            attrs.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+            getWindow().setAttributes(attrs);
+        } catch (Exception ignored) {
+            /* 个别 ROM 不支持，保持默认 */
+        }
     }
 
     @SuppressWarnings("deprecation")
@@ -77,6 +91,46 @@ public class MainActivity extends BridgeActivity {
                     }
                 }
             );
+        }
+
+        /** 只调本窗口的亮度：不需要 WRITE_SETTINGS 权限，退出播放后传 -1 交还系统 */
+        @JavascriptInterface
+        public void setWindowBrightness(final int percent) {
+            runOnUiThread(
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            WindowManager.LayoutParams attrs = getWindow().getAttributes();
+                            if (percent < 0) {
+                                attrs.screenBrightness = -1f;
+                            } else {
+                                float value = percent / 100f;
+                                if (value < 0.02f) value = 0.02f;
+                                if (value > 1f) value = 1f;
+                                attrs.screenBrightness = value;
+                            }
+                            getWindow().setAttributes(attrs);
+                        } catch (Exception ignored) {
+                            /* 窗口已销毁时忽略 */
+                        }
+                    }
+                }
+            );
+        }
+
+        /** 系统亮度作为播放内亮度条的起点；自动亮度或读不到时返回 -1，H5 从 100% 起算 */
+        @JavascriptInterface
+        public int getSystemBrightness() {
+            try {
+                int mode = Settings.System.getInt(getContentResolver(), Settings.System.SCREEN_BRIGHTNESS_MODE);
+                if (mode == Settings.System.BRIGHTNESS_MODE_AUTOMATIC) return -1;
+                int value = Settings.System.getInt(getContentResolver(), Settings.System.SCREEN_BRIGHTNESS);
+                if (value < 0) return -1;
+                return Math.max(0, Math.min(100, Math.round(value * 100f / 255f)));
+            } catch (Exception ignored) {
+                return -1;
+            }
         }
 
         /** 全屏播放时由 H5 调 Activity 级方向锁，WebView 的 screen.orientation.lock 在安卓上不可靠 */

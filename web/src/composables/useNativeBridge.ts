@@ -11,6 +11,10 @@ interface NativeBridge {
   /** 系统媒体音量：0-100，-1 表示拿不到 */
   getSystemVolume(): number
   setSystemVolume(percent: number): void
+  /** 播放窗口的屏幕亮度：0-100，-1 交还系统控制 */
+  setWindowBrightness(percent: number): void
+  /** 系统屏幕亮度：0-100，-1 表示自动亮度或拿不到 */
+  getSystemBrightness(): number
   /** 拉起系统的无线投屏 / 多屏互动面板，返回是否成功 */
   openCastPanel(): boolean
   /** Android Activity 级方向锁：全屏播放强制横屏，退出后恢复重力感应 */

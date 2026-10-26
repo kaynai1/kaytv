@@ -48,6 +48,8 @@ const rate = ref(1)
 const skipIntro = ref(0)
 const skipOutro = ref(0)
 const gestureHint = ref('')
+const brightness = ref(100)
+const brightnessHint = ref(false)
 
 const RATES = [0.5, 0.75, 1, 1.25, 1.5, 2, 3]
 const SKIP_STEPS = [0, 5, 10, 15, 30, 60]
@@ -75,6 +77,9 @@ let controlsShownAtTouch = true
 let lastTapAt = 0
 let singleTapTimer = 0
 let hintTimer = 0
+let brightnessTimer = 0
+let brightnessDrag: { y: number; value: number } | null = null
+let brightnessMoved = false
 
 let lineAttempt = 0
 let lineAttemptKey = ''
@@ -827,6 +832,66 @@ function releaseLongPress() {
   flashHint(rate.value === 1 ? '已恢复常速' : `已恢复 ${rate.value}x`, 700)
 }
 
+/* ---------- 亮度：左半屏竖划调本窗口亮度，退出播放交还系统 ---------- */
+
+const useNativeBrightness = computed(
+  () => typeof nativeBridge()?.setWindowBrightness === 'function'
+)
+
+function applyBrightness() {
+  if (useNativeBrightness.value) nativeBridge()?.setWindowBrightness(brightness.value)
+}
+
+/** 退出播放交还系统亮度，否则整个 App 都被压在最后一档 */
+function releaseBrightness() {
+  if (useNativeBrightness.value) nativeBridge()?.setWindowBrightness(-1)
+}
+
+function setBrightness(value: number) {
+  const next = Math.max(2, Math.min(100, Math.round(value)))
+  if (next === brightness.value) return
+  brightness.value = next
+  applyBrightness()
+}
+
+function showBrightnessHint() {
+  brightnessHint.value = true
+  window.clearTimeout(brightnessTimer)
+  brightnessTimer = window.setTimeout(() => {
+    brightnessHint.value = false
+  }, 900)
+}
+
+/** 进播放器先对齐系统亮度；自动亮度读不到就不接管窗口，等用户真去划再压暗 */
+function syncBrightness() {
+  if (!useNativeBrightness.value) return
+  const system = nativeBridge()?.getSystemBrightness?.() ?? -1
+  if (system < 0) {
+    brightness.value = 100
+    return
+  }
+  brightness.value = Math.max(2, Math.min(100, system))
+  applyBrightness()
+}
+
+/** 左半屏竖划调亮度：上划更亮、下划更暗；接管后返回 true，免得 touchend 又当成快进 */
+function tryBrightnessDrag(touch: Touch, dx: number, dy: number, event: TouchEvent): boolean {
+  const rect = stage.value?.getBoundingClientRect()
+  if (!rect) return false
+  if (!brightnessDrag) {
+    if (Math.abs(dy) < 14 || Math.abs(dy) <= Math.abs(dx) * 1.3) return false
+    if (gestureStart.x - rect.left > rect.width * 0.45) return false
+    stopLongPress()
+    brightnessDrag = { y: gestureStart.y, value: brightness.value }
+  }
+  if (event.cancelable) event.preventDefault()
+  const span = Math.max(200, rect.height * 0.8)
+  setBrightness(brightnessDrag.value + ((brightnessDrag.y - touch.clientY) / span) * 100)
+  brightnessMoved = true
+  showBrightnessHint()
+  return true
+}
+
 function onStageTouchStart(event: TouchEvent) {
   if (!phoneGestures.value || event.touches.length !== 1) return
   const target = event.target as HTMLElement | null
@@ -835,6 +900,8 @@ function onStageTouchStart(event: TouchEvent) {
   gestureStart = { x: touch.clientX, y: touch.clientY, at: Date.now() }
   controlsShownAtTouch = controlsVisible.value
   swipeMoved = false
+  brightnessDrag = null
+  brightnessMoved = false
   longPressActive = false
   stopLongPress()
   if (isLive.value || error.value) return
@@ -856,6 +923,7 @@ function onStageTouchMove(event: TouchEvent) {
     if (Math.abs(dx) > 18 || Math.abs(dy) > 18) releaseLongPress()
     return
   }
+  if (tryBrightnessDrag(touch, dx, dy, event)) return
   if (Math.abs(dx) < 12 || Math.abs(dx) <= Math.abs(dy) * 1.2) return
   stopLongPress()
   if (isLive.value) return
@@ -875,6 +943,12 @@ function onStageTouchEnd(event: TouchEvent) {
   const elapsed = Date.now() - gestureStart.at
   if (longPressActive) {
     releaseLongPress()
+    return
+  }
+  if (brightnessMoved) {
+    brightnessDrag = null
+    brightnessMoved = false
+    showBrightnessHint()
     return
   }
   if (swipeMoved || Math.abs(dx) > 44) {
@@ -911,6 +985,8 @@ function onStageTouchCancel() {
   stopLongPress()
   releaseLongPress()
   swipeMoved = false
+  brightnessDrag = null
+  brightnessMoved = false
 }
 
 function onVideoClick() {
@@ -1725,6 +1801,7 @@ watch(
       drawerQuery.value = ''
       error.value = ''
       controlsVisible.value = true
+      syncBrightness()
       if (runtime.native && !settings.tvMode) {
         if (isLive.value) enterFullscreen()
         else if (!portrait.value) enterFullscreen(false)
@@ -1737,10 +1814,15 @@ watch(
       window.clearTimeout(hideTimer)
       window.clearTimeout(singleTapTimer)
       window.clearTimeout(hintTimer)
+      window.clearTimeout(brightnessTimer)
       stopLongPress()
       longPressActive = false
       swipeMoved = false
       gestureHint.value = ''
+      brightnessDrag = null
+      brightnessMoved = false
+      brightnessHint.value = false
+      releaseBrightness()
       document.body.style.overflow = ''
       drawerOpen.value = false
       drawerTab.value = 'list'
@@ -1869,6 +1951,16 @@ onBeforeUnmount(() => {
 
       <div v-if="gestureHint" class="player-gesture-hint">
         <span>{{ gestureHint }}</span>
+      </div>
+
+      <div v-if="brightnessHint" class="player-brightness">
+        <div class="brightness-row">
+          <AppIcon name="sun" :size="15" />
+          <span>屏幕亮度 {{ brightness }}%</span>
+        </div>
+        <div class="brightness-track">
+          <span class="brightness-fill" :style="{ width: `${brightness}%` }" />
+        </div>
       </div>
 
       <div v-if="waiting && !error" class="player-spinner">
@@ -2493,6 +2585,43 @@ onBeforeUnmount(() => {
   backdrop-filter: blur(10px);
 }
 
+.player-brightness {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 5;
+  transform: translate(-50%, -50%);
+  width: min(250px, 58%);
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 14px;
+  background: rgba(8, 10, 14, 0.74);
+  color: #fff;
+  pointer-events: none;
+  backdrop-filter: blur(10px);
+}
+.brightness-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums lining-nums;
+}
+.brightness-track {
+  margin-top: 9px;
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.22);
+}
+.brightness-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: #fff;
+}
+
 .player-overlay.sheet .player-center-btn {
   width: 62px;
   height: 62px;
@@ -2550,6 +2679,9 @@ onBeforeUnmount(() => {
   align-items: flex-start;
   gap: 14px;
   padding: 22px clamp(16px, 2.4vw, 36px) 64px;
+  /* 横屏挖孔在左侧时按钮不能压在摄像头下面 */
+  padding-left: max(clamp(16px, 2.4vw, 36px), calc(env(safe-area-inset-left) + 12px));
+  padding-right: max(clamp(16px, 2.4vw, 36px), calc(env(safe-area-inset-right) + 12px));
   background: linear-gradient(180deg, rgba(0, 0, 0, 0.82), rgba(0, 0, 0, 0));
 }
 
@@ -2646,6 +2778,8 @@ onBeforeUnmount(() => {
 .player-bottom {
   bottom: 0;
   padding: 64px clamp(16px, 2.4vw, 36px) 22px;
+  padding-left: max(clamp(16px, 2.4vw, 36px), calc(env(safe-area-inset-left) + 12px));
+  padding-right: max(clamp(16px, 2.4vw, 36px), calc(env(safe-area-inset-right) + 12px));
   background: linear-gradient(0deg, rgba(0, 0, 0, 0.88), rgba(0, 0, 0, 0));
   display: flex;
   flex-direction: column;
