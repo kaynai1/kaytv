@@ -124,7 +124,7 @@ public class MainActivity extends BridgeActivity {
         public int getSystemBrightness() {
             try {
                 int mode = Settings.System.getInt(getContentResolver(), Settings.System.SCREEN_BRIGHTNESS_MODE);
-                if (mode == Settings.System.BRIGHTNESS_MODE_AUTOMATIC) return -1;
+                if (mode == Settings.System.SCREEN_BRIGHTNESS_MODE_AUTOMATIC) return -1;
                 int value = Settings.System.getInt(getContentResolver(), Settings.System.SCREEN_BRIGHTNESS);
                 if (value < 0) return -1;
                 return Math.max(0, Math.min(100, Math.round(value * 100f / 255f)));
