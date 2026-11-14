@@ -7,12 +7,14 @@ import AppIcon from './AppIcon.vue'
 
 const props = withDefaults(
   defineProps<{
-    item: PosterItem
+    item: PosterItem & { area?: string; score?: string }
     progress?: number
     showSource?: boolean
     compact?: boolean
+    /** 首推位：标题下展示评分、年份、类型、地区四类信息 */
+    info?: boolean
   }>(),
-  { progress: 0, showSource: false, compact: false }
+  { progress: 0, showSource: false, compact: false, info: false }
 )
 
 defineEmits<{ select: [item: PosterItem] }>()
@@ -20,6 +22,12 @@ defineEmits<{ select: [item: PosterItem] }>()
 const failed = ref(false)
 const tmdbFailed = ref(false)
 const initial = computed(() => props.item.name.trim().slice(0, 1) || '影')
+const scoreText = computed(() => {
+  const value = Number.parseFloat(String(props.item.score || ''))
+  return Number.isFinite(value) && value > 0 ? String(props.item.score).trim() : ''
+})
+// 采集源的地区字段常带前导冒号，如 ": 中国大陆"
+const areaText = computed(() => String(props.item.area || '').replace(/^[\s:：·,，.-]+/, '').trim())
 const key = computed(() => tmdbKey(props.item.name, props.item.year))
 const tmdbSrc = computed(() => (tmdbFailed.value ? '' : tmdbPosterUrl(tmdbArts[key.value], 'w500')))
 const src = computed(() => tmdbSrc.value || mediaUrl(props.item.pic))
@@ -97,7 +105,13 @@ function onError() {
     </div>
     <div class="poster-meta">
       <span class="poster-title">{{ props.item.name }}</span>
-      <span class="poster-sub">
+      <span v-if="props.info" class="poster-chips">
+        <span v-if="scoreText" class="poster-chip score">{{ scoreText }}</span>
+        <span v-if="props.item.year" class="poster-chip">{{ props.item.year }}</span>
+        <span v-if="props.item.typeName" class="poster-chip">{{ props.item.typeName }}</span>
+        <span v-if="areaText" class="poster-chip">{{ areaText }}</span>
+      </span>
+      <span v-else class="poster-sub">
         <template v-if="props.item.year">{{ props.item.year }} · </template>
         {{ props.item.typeName || props.item.remarks || '影视' }}
       </span>
@@ -257,6 +271,26 @@ function onError() {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.poster-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 3px;
+}
+.poster-chip {
+  padding: 3px 7px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.09);
+  color: #d4d8d6;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+}
+.poster-chip.score {
+  color: #ffd479;
 }
 /* 横滑行里只留片名，副标题在 hover 层里显示 */
 .poster-card.compact .poster-sub {

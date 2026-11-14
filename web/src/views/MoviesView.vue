@@ -508,6 +508,7 @@ watch(
               :key="`${item.sourceId}:${item.id}`"
               :item="displayItem(item)"
               :progress="progressOf(item.sourceId, item.id)"
+              info
               @select="openDetail"
             />
           </div>
