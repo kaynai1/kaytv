@@ -1,13 +1,17 @@
 package com.kaynai.kaytv;
 
+import android.app.DownloadManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.content.res.Configuration;
 import android.database.ContentObserver;
+import android.database.Cursor;
 import android.media.AudioManager;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
@@ -23,7 +27,9 @@ import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
 import com.getcapacitor.Bridge;
 import com.getcapacitor.BridgeActivity;
+import java.io.File;
 import java.util.Locale;
+import org.json.JSONObject;
 
 public class MainActivity extends BridgeActivity {
 
@@ -173,6 +179,7 @@ public class MainActivity extends BridgeActivity {
 
         private volatile boolean backHandled = false;
         private ContentObserver volumeObserver;
+        private long updateDownloadId = -1;
 
         @JavascriptInterface
         public void setBackHandled(boolean handled) {
@@ -403,6 +410,120 @@ public class MainActivity extends BridgeActivity {
             } catch (Exception ignored) {
                 return false;
             }
+        }
+
+        /* ---------- 应用内更新：系统下载器下 APK，下完直接调安装器 ---------- */
+
+        private DownloadManager downloadManager() {
+            return (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
+        }
+
+        @JavascriptInterface
+        public String downloadUpdate(String url, String fileName) {
+            try {
+                Uri uri = Uri.parse(url);
+                if (!"https".equalsIgnoreCase(uri.getScheme())) {
+                    return "{\"status\":\"failed\",\"error\":\"更新地址不合法\"}";
+                }
+                String safe = fileName == null ? "" : fileName.replaceAll("[^\\w.-]", "");
+                if (!safe.toLowerCase(Locale.ROOT).endsWith(".apk")) {
+                    return "{\"status\":\"failed\",\"error\":\"更新包不是 APK\"}";
+                }
+                DownloadManager manager = downloadManager();
+                if (manager == null) {
+                    return "{\"status\":\"failed\",\"error\":\"系统下载器不可用\"}";
+                }
+                if (updateDownloadId >= 0) {
+                    try {
+                        manager.remove(updateDownloadId);
+                    } catch (Exception ignored) {
+                        /* 上一个任务已经结束 */
+                    }
+                }
+                File dir = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+                if (dir != null) {
+                    File old = new File(dir, safe);
+                    if (old.exists()) old.delete();
+                }
+                DownloadManager.Request request = new DownloadManager.Request(uri);
+                request.setMimeType("application/vnd.android.package-archive");
+                request.setTitle("KayTV 更新");
+                request.setDescription("正在下载 " + safe);
+                request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+                request.setDestinationInExternalFilesDir(MainActivity.this, Environment.DIRECTORY_DOWNLOADS, safe);
+                request.setAllowedOverMetered(true);
+                request.setAllowedOverRoaming(false);
+                updateDownloadId = manager.enqueue(request);
+                return "{\"status\":\"downloading\",\"id\":" + updateDownloadId + "}";
+            } catch (Exception error) {
+                return "{\"status\":\"failed\",\"error\":\"无法启动下载\"}";
+            }
+        }
+
+        @JavascriptInterface
+        public String updateProgress() {
+            DownloadManager manager = downloadManager();
+            if (manager == null || updateDownloadId < 0) return "{\"status\":\"idle\"}";
+            Cursor cursor = null;
+            try {
+                cursor = manager.query(new DownloadManager.Query().setFilterById(updateDownloadId));
+                if (cursor == null || !cursor.moveToFirst()) {
+                    return "{\"status\":\"failed\",\"error\":\"下载任务已丢失\"}";
+                }
+                int status = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS));
+                long received = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR));
+                long total = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES));
+                if (status == DownloadManager.STATUS_SUCCESSFUL) {
+                    return "{\"status\":\"successful\",\"received\":" + received + ",\"total\":" + total + "}";
+                }
+                if (status == DownloadManager.STATUS_FAILED) {
+                    int reason = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON));
+                    return "{\"status\":\"failed\",\"received\":" + received + ",\"error\":" +
+                        JSONObject.quote("下载失败（错误码 " + reason + "）") + "}";
+                }
+                return "{\"status\":\"downloading\",\"received\":" + received + ",\"total\":" + total + "}";
+            } catch (Exception error) {
+                return "{\"status\":\"failed\",\"error\":\"读取下载进度失败\"}";
+            } finally {
+                if (cursor != null) cursor.close();
+            }
+        }
+
+        @JavascriptInterface
+        public String installUpdate() {
+            DownloadManager manager = downloadManager();
+            if (manager == null || updateDownloadId < 0) return "failed";
+            Uri uri = manager.getUriForDownloadedFile(updateDownloadId);
+            if (uri == null) return "failed";
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !getPackageManager().canRequestPackageInstalls()) {
+                try {
+                    Intent settings = new Intent(
+                        Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                        Uri.parse("package:" + getPackageName())
+                    );
+                    settings.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    startActivity(settings);
+                    return "permission";
+                } catch (Exception ignored) {
+                    return "failed";
+                }
+            }
+            runOnUiThread(
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        Intent install = new Intent(Intent.ACTION_VIEW);
+                        install.setDataAndType(uri, "application/vnd.android.package-archive");
+                        install.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                        try {
+                            startActivity(install);
+                        } catch (Exception ignored) {
+                            /* 个别 ROM 拦住安装器，H5 会提示改用发布页 */
+                        }
+                    }
+                }
+            );
+            return "installing";
         }
     }
 }

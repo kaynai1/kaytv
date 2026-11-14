@@ -10,6 +10,14 @@ import { runtime } from '../api/runtime'
 import { probeLiveSource, probeVodSource, rememberHealth } from '../api/standalone'
 import { copyText, diagnosticsText, recentEvents } from '../api/diagnostics'
 import { checkForUpdate, hasUpdate, latestReleaseUrl, openExternal, preferredAsset, updateState } from '../api/updateCheck'
+import {
+  canInAppInstall,
+  formatSize,
+  formatSpeed,
+  installUpdate,
+  startUpdateDownload,
+  updateDownload
+} from '../api/appUpdater'
 import { qrDataUrl } from '../api/qr'
 import { addCustom, isCloudSource, removeCustom, type AddInput } from '../api/customSources'
 import { importTvboxSource, type ImportResult } from '../api/tvboxImport'
@@ -251,10 +259,69 @@ async function runUpdateCheck() {
   else toast.info(`已经是最新版本 v${updateState.current}`)
 }
 
-function downloadUpdate() {
+const inAppUpdate = computed(() => canInAppInstall())
+const updatePercent = computed(() => {
+  if (updateDownload.phase === 'ready' || updateDownload.phase === 'installing') return 100
+  if (!updateDownload.total) return 0
+  return Math.max(0, Math.min(100, Math.round((updateDownload.received / updateDownload.total) * 100)))
+})
+const updatePhaseLabel = computed(() => {
+  switch (updateDownload.phase) {
+    case 'downloading':
+      return `下载中 ${updatePercent.value}%`
+    case 'ready':
+      return '下载完成'
+    case 'installing':
+      return '正在安装'
+    case 'error':
+      return '下载中断'
+    default:
+      return ''
+  }
+})
+const updateMetaLabel = computed(() => {
+  if (updateDownload.phase === 'downloading') {
+    const total = updateDownload.total || updateAsset.value?.size || 0
+    return `${formatSize(updateDownload.received)} / ${formatSize(total)} · ${formatSpeed(updateDownload.speed)}`
+  }
+  if (updateDownload.phase === 'ready' || updateDownload.phase === 'installing') {
+    return `安装包 ${formatSize(updateDownload.received || updateDownload.total)} 已就绪`
+  }
+  return ''
+})
+const updateActionLabel = computed(() => {
+  if (!updateAsset.value) return '打开发布页'
+  if (!inAppUpdate.value) return '下载新版本'
+  if (updateDownload.phase === 'downloading') return `下载中 ${updatePercent.value}%`
+  if (updateDownload.phase === 'ready') return '立即安装'
+  if (updateDownload.phase === 'installing') return '正在启动安装'
+  return '下载并安装'
+})
+const updateBusy = computed(
+  () => updateDownload.phase === 'downloading' || updateDownload.phase === 'installing'
+)
+
+async function downloadUpdate() {
   const info = updateState.info
   if (!info) return
-  openExternal(updateAsset.value?.url || info.page)
+  const asset = updateAsset.value
+  if (!asset) {
+    openExternal(info.page)
+    return
+  }
+  if (!inAppUpdate.value) {
+    openExternal(asset.url)
+    return
+  }
+  if (updateDownload.phase === 'ready' && updateDownload.fileName === asset.name) {
+    const result = await installUpdate()
+    if (result === 'permission') toast.info('已打开系统设置，允许 KayTV 安装应用后回来再点一次安装')
+    else if (result === 'failed') toast.error(updateDownload.error || '安装器没有启动')
+    return
+  }
+  if (updateBusy.value) return
+  await startUpdateDownload(asset.url, asset.name, asset.size)
+  if (updateDownload.phase === 'error') toast.error(updateDownload.error || '下载失败')
 }
 
 async function copyDiag() {
@@ -1055,9 +1122,29 @@ onMounted(async () => {
             updateAsset ? `将下载 ${updateAsset.name}` : '该版本没有匹配当前设备的安装包'
           }}
         </p>
+        <div
+          v-if="hasUpdate() && inAppUpdate && updateDownload.phase !== 'idle'"
+          class="update-download"
+          :class="`phase-${updateDownload.phase}`"
+        >
+          <div class="update-download-head">
+            <span class="update-download-title">最新版本 v{{ updateState.info?.version }}</span>
+            <span class="update-download-phase">{{ updatePhaseLabel }}</span>
+          </div>
+          <div class="update-bar"><span :style="{ width: `${updatePercent}%` }" /></div>
+          <p v-if="updateMetaLabel" class="update-download-meta">{{ updateMetaLabel }}</p>
+          <p v-if="updateDownload.error" class="update-download-meta bad">{{ updateDownload.error }}</p>
+        </div>
         <div class="data-actions">
-          <button v-if="hasUpdate()" class="btn" data-nav type="button" @click="downloadUpdate">
-            {{ updateAsset ? '下载新版本' : '打开发布页' }}
+          <button
+            v-if="hasUpdate()"
+            class="btn"
+            data-nav
+            type="button"
+            :disabled="updateBusy"
+            @click="downloadUpdate"
+          >
+            {{ updateActionLabel }}
           </button>
           <button v-if="updateState.info" class="btn ghost" data-nav type="button" @click="openExternal(updateState.info.page)">
             查看更新说明
@@ -1481,6 +1568,53 @@ a.btn {
 .update-qr-text .update-note:last-child {
   margin-bottom: 0;
   color: var(--muted-2);
+}
+.update-download {
+  margin: 2px 0 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+}
+.update-download-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12.5px;
+}
+.update-download-title {
+  color: #f5f5f7;
+  font-weight: 600;
+}
+.update-download-phase {
+  color: var(--muted);
+}
+.update-bar {
+  height: 6px;
+  margin: 10px 0 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.09);
+  overflow: hidden;
+}
+.update-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #f5f5f7;
+  transition: width 0.25s ease;
+}
+.update-download.phase-error .update-bar span {
+  background: #ff8a8a;
+}
+.update-download-meta {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--muted-2);
+}
+.update-download-meta.bad {
+  margin-top: 6px;
+  color: #ff8a8a;
 }
 .diag-list {
   list-style: none;

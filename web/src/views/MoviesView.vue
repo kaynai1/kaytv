@@ -4,10 +4,8 @@ import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { contentTypeName } from '@kaytv/shared'
 import { api } from '../api/client'
 import { mediaUrl } from '../api/runtime'
-import { tmdbArts, tmdbEnsure, tmdbKey, tmdbPosterUrl, tmdbSwapImageHost } from '../api/tmdb'
 import { useSettingsStore } from '../stores/settings'
 import { useLibraryStore, itemKey } from '../stores/library'
-import { usePlayerStore } from '../stores/player'
 import { toast } from '../composables/useToast'
 import type { PosterItem, VodItem } from '../types'
 import AppIcon from '../components/AppIcon.vue'
@@ -16,7 +14,6 @@ import PosterCard from '../components/PosterCard.vue'
 
 const settings = useSettingsStore()
 const library = useLibraryStore()
-const player = usePlayerStore()
 const route = useRoute()
 const router = useRouter()
 
@@ -193,72 +190,27 @@ function byHot(a: VodItem, b: VodItem): number {
 
 const ranked = computed(() => [...items.value].sort(byHot))
 
-/** 精选位跟着最新发布走：先锁定最新发行年份，再在同一年里挑评分和热度最高的 */
-const featured = computed<VodItem | null>(() => {
+/** 今日首推四个位置：电影和剧集各取最新的两部，不够再用最近更新补齐 */
+const pickItems = computed<VodItem[]>(() => {
   const pool = recommendItems.value.filter((item) => !!item.pic)
-  if (!pool.length) return ranked.value[0] || null
-  const newestYear = Math.max(...pool.map(releaseYear))
-  const newest = pool.filter((item) => releaseYear(item) === newestYear)
-  return newest.sort(
-    (a, b) => scoreOf(b) - scoreOf(a) || (b.time || 0) - (a.time || 0)
-  )[0]
-})
-const featuredType = computed(
-  () => contentTypeName(featured.value?.contentType || '') || featured.value?.typeName || ''
-)
-const featuredMeta = computed(() =>
-  [featured.value?.year, featuredType.value, featured.value?.area].filter(Boolean).join(' · ')
-)
-const featuredKey = computed(() => tmdbKey(featured.value?.name || '', featured.value?.year || ''))
-const featuredFailed = ref(false)
-const featuredSrc = computed(() => {
-  if (!featuredFailed.value) {
-    const tmdb = tmdbPosterUrl(tmdbArts[featuredKey.value], 'w500')
-    if (tmdb) return tmdb
+  const source = pool.length ? pool : ranked.value
+  const seen = new Set<string>()
+  const picks: VodItem[] = []
+  const push = (item: VodItem) => {
+    if (picks.length >= 4) return
+    const key = `${item.name.replace(/\s+/g, '').toLowerCase()}|${yearOf(item)}`
+    if (seen.has(key)) return
+    seen.add(key)
+    picks.push(item)
   }
-  return mediaUrl(featured.value?.pic || '')
-})
-/** TV / 桌面端首推卡用同一张海报做模糊背景 */
-const heroStyle = computed(() =>
-  featuredSrc.value ? { '--hero-art': `url(${JSON.stringify(featuredSrc.value)})` } : undefined
-)
-const featuredFavorited = computed(() => {
-  const item = featured.value
-  if (!item) return false
-  return library.isFavorite(item.sourceId, item.id)
-})
-
-function onFeaturedError() {
-  if (featuredFailed.value) return
-  const tmdb = tmdbPosterUrl(tmdbArts[featuredKey.value], 'w500')
-  if (tmdb && tmdbSwapImageHost(tmdb)) return
-  featuredFailed.value = true
-}
-
-let featuredToken = 0
-async function featuredPlay() {
-  const item = featured.value
-  if (!item) return
-  const token = ++featuredToken
-  try {
-    const detail = await api.detail(item.sourceId, item.id)
-    if (token !== featuredToken) return
-    if (detail && `${detail.sourceId}:${detail.id}` === `${item.sourceId}:${item.id}`) {
-      player.openVod(detail, 0, 0, 0)
-      return
-    }
-  } catch {
-    /* 详情加载失败时退回弹窗，让用户手动选线路 */
+  for (const type of ['tv', 'movie']) {
+    source.filter((item) => (item.contentType || '') === type).slice(0, 2).forEach(push)
   }
-  if (token === featuredToken) openDetail(item)
-}
-
-function featuredFavorite() {
-  const item = featured.value
-  if (!item) return
-  const added = library.toggleFavorite({ ...item })
-  toast.success(added ? '已加入清单' : '已移出清单')
-}
+  source.forEach(push)
+  return picks.sort(
+    (a, b) => releaseYear(b) - releaseYear(a) || (b.time || 0) - (a.time || 0)
+  )
+})
 
 let feedToken = 0
 
@@ -330,7 +282,6 @@ function reload() {
   items.value = []
   page.value = 0
   pageCount.value = 1
-  featuredFailed.value = false
   return loadPage(1)
 }
 
@@ -429,11 +380,6 @@ onBeforeUnmount(() => {
   observer?.disconnect()
   rowObserver?.disconnect()
   window.removeEventListener('resize', updateScrollState)
-})
-
-watch(featured, (item) => {
-  featuredFailed.value = false
-  if (item) tmdbEnsure(item.name, item.year, item.contentType || '')
 })
 
 watch([content, region, sourceId], () => {
@@ -551,35 +497,19 @@ watch(
           </div>
         </section>
 
-        <section v-if="featured" class="mm-hero" :style="heroStyle">
-          <button class="mm-hero-poster" type="button" data-nav @click="openDetail(featured)">
-            <img
-              v-if="featuredSrc && !featuredFailed"
-              :key="featuredKey"
-              :src="featuredSrc"
-              :alt="featured.name"
-              loading="eager"
-              decoding="async"
-              referrerpolicy="no-referrer"
-              @error="onFeaturedError"
+        <section v-if="pickItems.length" class="mm-picks">
+          <div class="mm-picks-head">
+            <h2>今日首推</h2>
+            <span>最新上线的电影与剧集</span>
+          </div>
+          <div class="mm-picks-row">
+            <PosterCard
+              v-for="item in pickItems"
+              :key="`${item.sourceId}:${item.id}`"
+              :item="displayItem(item)"
+              :progress="progressOf(item.sourceId, item.id)"
+              @select="openDetail"
             />
-            <span v-else class="mm-hero-fallback">{{ featured.name.slice(0, 1) }}</span>
-          </button>
-          <div class="mm-hero-info">
-            <span class="mm-hero-kicker">
-              ✦ 今日首推<template v-if="featured.sourceName"> · {{ featured.sourceName }}</template>
-            </span>
-            <h2 class="mm-hero-title">{{ featured.name }}</h2>
-            <div class="mm-hero-chips">
-              <span v-if="scoreOf(featured) > 0" class="mm-hero-score">{{ featured.score }}</span>
-              <span v-if="featured.year">{{ featured.year }}</span>
-              <span v-if="featuredType">{{ featuredType }}</span>
-              <span v-if="featured.area">{{ featured.area }}</span>
-            </div>
-            <button class="mm-hero-play" type="button" data-nav @click="featuredPlay">
-              <AppIcon name="play" :size="13" />
-              立即观看
-            </button>
           </div>
         </section>
 
@@ -1618,131 +1548,40 @@ watch(
   background: #6ee7b7;
 }
 
-.mm-hero {
-  height: 198px;
-  display: flex;
-  gap: 16px;
+.mm-picks {
   margin-top: 16px;
-  padding: 14px;
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  border-radius: 24px;
-  background: linear-gradient(180deg, rgba(20, 28, 25, 0.95), rgba(13, 19, 17, 0.97));
-  box-shadow:
-    0 18px 42px rgba(0, 0, 0, 0.4),
-    inset 0 1px 0 rgba(255, 255, 255, 0.14);
 }
 
-.mm-hero-poster {
-  flex: none;
-  width: 110px;
-  height: 166px;
-  padding: 0;
-  border: 0;
-  border-radius: 14px;
-  overflow: hidden;
-  background: #1b2622;
-  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.42);
-  cursor: pointer;
-  outline: none;
-}
-
-.mm-hero-poster img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-}
-
-.mm-hero-fallback {
-  display: grid;
-  place-items: center;
-  width: 100%;
-  height: 100%;
-  background:
-    radial-gradient(90% 70% at 70% 8%, rgba(52, 211, 153, 0.16), transparent 60%),
-    linear-gradient(165deg, #26312d 0%, #171d1b 60%, #101412 100%);
-  font-size: 32px;
-  font-weight: 700;
-  color: rgba(255, 255, 255, 0.3);
-}
-
-.mm-hero-info {
-  flex: 1;
-  min-width: 0;
+.mm-picks-head {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
+  align-items: baseline;
+  gap: 10px;
+  margin: 0 0 10px;
 }
 
-.mm-hero-kicker {
-  align-self: flex-start;
-  max-width: 100%;
-  padding: 4px 10px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.06);
-  font-size: 10.5px;
+.mm-picks-head h2 {
+  margin: 0;
+  font-size: 16px;
   font-weight: 700;
-  color: #6ee7b7;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.mm-hero-title {
-  margin: 6px 0 0;
-  font-size: 20px;
-  font-weight: 800;
-  line-height: 1.2;
   color: #f5f5f7;
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
 }
 
-.mm-hero-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-  margin-top: 8px;
-  max-height: 22px;
-  overflow: hidden;
+.mm-picks-head span {
+  font-size: 11.5px;
+  color: var(--muted-2);
 }
 
-.mm-hero-chips span {
-  padding: 3px 7px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.09);
-  color: #d4d8d6;
-  font-size: 10.5px;
-  font-weight: 600;
-  line-height: 1;
-  white-space: nowrap;
+.mm-picks-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
 }
 
-.mm-hero-chips .mm-hero-score {
-  color: #ffd479;
-}
-
-.mm-hero-play {
-  align-self: flex-end;
-  margin-top: auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 34px;
-  padding: 0 15px;
-  border: 0;
-  border-radius: 999px;
-  background: #f5f5f7;
-  color: #0b0f0d;
-  font-size: 12.5px;
-  font-weight: 800;
-  cursor: pointer;
-  outline: none;
-  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.36);
+@media (max-width: 899px) {
+  .mm-picks-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
 }
 
 .mm-catrow {
@@ -1988,7 +1827,7 @@ watch(
 }
 
 .tv-mode .mm-body {
-  padding: 22px 120px 90px 34px;
+  padding: 22px 16px 90px 34px;
 }
 
 .tv-mode .mm-sec-head h2 {
@@ -2018,83 +1857,16 @@ watch(
   gap: 12px;
 }
 
-.tv-mode .mm-hero {
-  position: relative;
-  height: 236px;
+.tv-mode .mm-picks {
   margin-top: 18px;
-  padding: 18px;
-  gap: 20px;
-  overflow: hidden;
-  border-color: rgba(255, 255, 255, 0.16);
-  border-radius: 22px;
-  background: linear-gradient(180deg, rgba(20, 26, 24, 0.9), rgba(11, 15, 14, 0.96));
 }
 
-.tv-mode .mm-hero::before {
-  content: '';
-  position: absolute;
-  inset: -34px;
-  background-image: var(--hero-art);
-  background-size: cover;
-  background-position: center 32%;
-  filter: blur(30px) saturate(1.25);
-  opacity: 0.5;
-  pointer-events: none;
+.tv-mode .mm-picks-head h2 {
+  font-size: 18px;
 }
 
-.tv-mode .mm-hero::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background:
-    linear-gradient(90deg, rgba(8, 12, 11, 0.16) 0%, rgba(8, 12, 11, 0.52) 54%, rgba(8, 12, 11, 0.92) 100%),
-    linear-gradient(180deg, rgba(8, 12, 11, 0.08), rgba(8, 12, 11, 0.42));
-  pointer-events: none;
-}
-
-.tv-mode .mm-hero > * {
-  position: relative;
-  z-index: 1;
-}
-
-.tv-mode .mm-hero-poster {
-  width: 148px;
-  height: 200px;
-  border-radius: 14px;
-}
-
-.tv-mode .mm-hero-info {
-  justify-content: center;
-}
-
-.tv-mode .mm-hero-kicker {
-  padding: 6px 13px;
-  font-size: 12px;
-  color: #9fe8c8;
-}
-
-.tv-mode .mm-hero-title {
-  margin-top: 8px;
-  font-size: 30px;
-  -webkit-line-clamp: 1;
-}
-
-.tv-mode .mm-hero-chips {
-  margin-top: 10px;
-  max-height: none;
-  gap: 6px;
-}
-
-.tv-mode .mm-hero-chips span {
-  padding: 5px 10px;
-  font-size: 12px;
-}
-
-.tv-mode .mm-hero-play {
-  align-self: flex-end;
-  height: 44px;
-  padding: 0 22px;
-  font-size: 14px;
+.tv-mode .mm-picks-row {
+  gap: 18px;
 }
 
 .tv-mode .mm-catrow {
