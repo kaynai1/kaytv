@@ -3,7 +3,7 @@ apply plugin: 'com.android.application'
 def kaytvKeystorePath = System.getenv('KAYTV_KEYSTORE')
 def kaytvKeystore = kaytvKeystorePath ? file(kaytvKeystorePath) : null
 // 应用内更新靠 versionCode 判断升级，CI 把版本号传进来，本地构建用同版本兜底
-def kaytvVersion = System.getenv('KAYTV_VERSION') ?: '0.6.10'
+def kaytvVersion = System.getenv('KAYTV_VERSION') ?: '0.6.11'
 def kaytvVersionParts = kaytvVersion.tokenize('.')
 def kaytvVersionCode = kaytvVersionParts.size() >= 3 ? (kaytvVersionParts[0] as int) * 10000 + (kaytvVersionParts[1] as int) * 100 + (kaytvVersionParts[2] as int) : 1
 

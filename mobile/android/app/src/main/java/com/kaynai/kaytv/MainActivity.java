@@ -20,6 +20,7 @@ import android.view.View;
 import android.view.WindowManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
+import androidx.core.content.FileProvider;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
@@ -180,6 +181,7 @@ public class MainActivity extends BridgeActivity {
         private volatile boolean backHandled = false;
         private ContentObserver volumeObserver;
         private long updateDownloadId = -1;
+        private String updateFileName = "";
 
         @JavascriptInterface
         public void setBackHandled(boolean handled) {
@@ -453,6 +455,7 @@ public class MainActivity extends BridgeActivity {
                 request.setDestinationInExternalFilesDir(MainActivity.this, Environment.DIRECTORY_DOWNLOADS, safe);
                 request.setAllowedOverMetered(true);
                 request.setAllowedOverRoaming(false);
+                updateFileName = safe;
                 updateDownloadId = manager.enqueue(request);
                 return "{\"status\":\"downloading\",\"id\":" + updateDownloadId + "}";
             } catch (Exception error) {
@@ -494,7 +497,17 @@ public class MainActivity extends BridgeActivity {
             DownloadManager manager = downloadManager();
             if (manager == null || updateDownloadId < 0) return "failed";
             Uri uri = manager.getUriForDownloadedFile(updateDownloadId);
-            if (uri == null) return "failed";
+            // 部分电视 ROM 的下载器不给内容地址，直接用下载到应用目录的 APK 再包一层 FileProvider
+            if (uri == null) {
+                File dir = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+                File apk = dir == null || updateFileName.isEmpty() ? null : new File(dir, updateFileName);
+                if (apk == null || !apk.isFile() || apk.length() == 0) return "failed";
+                try {
+                    uri = FileProvider.getUriForFile(MainActivity.this, getPackageName() + ".fileprovider", apk);
+                } catch (Exception error) {
+                    return "failed";
+                }
+            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !getPackageManager().canRequestPackageInstalls()) {
                 try {
                     Intent settings = new Intent(
@@ -508,12 +521,13 @@ public class MainActivity extends BridgeActivity {
                     return "failed";
                 }
             }
+            final Uri installUri = uri;
             runOnUiThread(
                 new Runnable() {
                     @Override
                     public void run() {
                         Intent install = new Intent(Intent.ACTION_VIEW);
-                        install.setDataAndType(uri, "application/vnd.android.package-archive");
+                        install.setDataAndType(installUri, "application/vnd.android.package-archive");
                         install.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_GRANT_READ_URI_PERMISSION);
                         try {
                             startActivity(install);
