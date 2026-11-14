@@ -896,10 +896,15 @@ function tryBrightnessDrag(touch: Touch, dx: number, dy: number, event: TouchEve
   return true
 }
 
+/** 按钮、进度条这些区域算播放器 UI，触摸不要按视频手势处理 */
+function isStageChrome(target: EventTarget | null): boolean {
+  const element = target as HTMLElement | null
+  return !!element?.closest('button, input, .player-error, .player-spinner')
+}
+
 function onStageTouchStart(event: TouchEvent) {
   if (!phoneGestures.value || event.touches.length !== 1) return
-  const target = event.target as HTMLElement | null
-  if (target?.closest('button, input, .player-error, .player-spinner')) return
+  if (isStageChrome(event.target)) return
   const touch = event.touches[0]
   gestureStart = { x: touch.clientX, y: touch.clientY, at: Date.now() }
   controlsShownAtTouch = controlsVisible.value
@@ -920,6 +925,7 @@ function onStageTouchStart(event: TouchEvent) {
 
 function onStageTouchMove(event: TouchEvent) {
   if (!phoneGestures.value || event.touches.length !== 1) return
+  if (isStageChrome(event.target)) return
   const touch = event.touches[0]
   const dx = touch.clientX - gestureStart.x
   const dy = touch.clientY - gestureStart.y
@@ -940,6 +946,7 @@ function onStageTouchMove(event: TouchEvent) {
 
 function onStageTouchEnd(event: TouchEvent) {
   if (!phoneGestures.value) return
+  if (isStageChrome(event.target)) return
   stopLongPress()
   const touch = event.changedTouches[0]
   const dx = touch ? touch.clientX - gestureStart.x : 0
@@ -1678,12 +1685,13 @@ function goBack() {
 function onKeydown(event: KeyboardEvent) {
   if (!player.open) return
   const target = event.target as HTMLElement | null
+  const inputType = target?.tagName === 'INPUT' ? (target as HTMLInputElement).type.toLowerCase() : ''
   const typing =
     !!target &&
-    (target.tagName === 'INPUT' ||
-      target.tagName === 'TEXTAREA' ||
+    (target.tagName === 'TEXTAREA' ||
       target.tagName === 'SELECT' ||
-      target.isContentEditable)
+      target.isContentEditable ||
+      (target.tagName === 'INPUT' && !['range', 'checkbox', 'radio', 'button', 'submit', 'reset', 'color', 'file'].includes(inputType)))
 
   if (event.key === 'Escape') {
     event.preventDefault()
@@ -1760,9 +1768,26 @@ function onKeydown(event: KeyboardEvent) {
     return
   }
 
-  if (event.key === 'Enter' || event.key === ' ') {
+  if (event.key === 'Enter') {
     const tag = target?.tagName || ''
     if (tag === 'BUTTON' || tag === 'A' || tag === 'INPUT' || drawerOpen.value) return
+    event.preventDefault()
+    event.stopPropagation()
+    togglePlay()
+    return
+  }
+
+  if (event.key === ' ') {
+    if (typing || drawerOpen.value) return
+    // 电脑端空格始终是播放/暂停：焦点停在按钮或进度条上也别让浏览器去“点按钮”
+    if (desktopKeys) {
+      event.preventDefault()
+      event.stopPropagation()
+      togglePlay()
+      return
+    }
+    const tag = target?.tagName || ''
+    if (tag === 'BUTTON' || tag === 'A' || tag === 'INPUT') return
     event.preventDefault()
     event.stopPropagation()
     togglePlay()
@@ -1992,6 +2017,8 @@ onMounted(() => {
   restoreRate()
   restoreSkip()
   restoreFill()
+  // 挂到 window 捕获阶段：点过视频画面后焦点会落到 body，挂在覆盖层上的监听就收不到了
+  window.addEventListener('keydown', onKeydown, true)
   window.addEventListener('kaytv:volume', onSystemVolume)
   window.addEventListener('kaytv:media', onMediaKey)
   window.addEventListener('kaytv:player-back', onPlayerBack)
@@ -2003,6 +2030,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeydown, true)
   window.removeEventListener('kaytv:volume', onSystemVolume)
   window.removeEventListener('kaytv:media', onMediaKey)
   window.removeEventListener('kaytv:player-back', onPlayerBack)
@@ -2027,7 +2055,6 @@ onBeforeUnmount(() => {
       :class="{ 'controls-idle': !controlsVisible || drawerOpen, sheet: sheetMode }"
       tabindex="-1"
       data-nav-scope
-      @keydown.capture="onKeydown"
       @mousemove="onOverlayMove"
       @touchstart.passive="wake"
     >
@@ -2384,7 +2411,7 @@ onBeforeUnmount(() => {
               详情
             </button>
             <button
-              v-if="!settings.tvMode"
+              v-if="!settings.tvMode || !runtime.native"
               class="player-btn round"
               type="button"
               :aria-label="isFullscreen ? '退出全屏' : '全屏'"
