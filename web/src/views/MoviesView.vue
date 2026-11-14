@@ -10,10 +10,13 @@ import { toast } from '../composables/useToast'
 import type { PosterItem, VodItem } from '../types'
 import AppIcon from '../components/AppIcon.vue'
 import EmptyState from '../components/EmptyState.vue'
+import PickCard from '../components/PickCard.vue'
 import PosterCard from '../components/PosterCard.vue'
+import { usePlayerStore } from '../stores/player'
 
 const settings = useSettingsStore()
 const library = useLibraryStore()
+const player = usePlayerStore()
 const route = useRoute()
 const router = useRouter()
 
@@ -342,6 +345,23 @@ function openDetail(item: PosterItem) {
   void router.push({ name: 'detail', params: { source: item.sourceId, id: item.id } })
 }
 
+let pickPlayToken = 0
+
+async function playPick(item: PosterItem) {
+  const token = ++pickPlayToken
+  try {
+    const detail = await api.detail(item.sourceId, item.id)
+    if (token !== pickPlayToken) return
+    if (detail && `${detail.sourceId}:${detail.id}` === `${item.sourceId}:${item.id}`) {
+      player.openVod(detail, 0, 0, 0)
+      return
+    }
+  } catch {
+    /* 详情加载失败时退回详情页，让用户手动选线路 */
+  }
+  if (token === pickPlayToken) openDetail(item)
+}
+
 function openHistory(source: string, id: string) {
   void router.push({ name: 'detail', params: { source, id } })
 }
@@ -503,13 +523,12 @@ watch(
             <span>最新上线的电影与剧集</span>
           </div>
           <div class="mm-picks-row">
-            <PosterCard
+            <PickCard
               v-for="item in pickItems"
               :key="`${item.sourceId}:${item.id}`"
               :item="displayItem(item)"
-              :progress="progressOf(item.sourceId, item.id)"
-              info
               @select="openDetail"
+              @play="playPick"
             />
           </div>
         </section>
@@ -1582,6 +1601,13 @@ watch(
   .mm-picks-row {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 12px;
+  }
+}
+
+@media (max-width: 639px) {
+  .mm-picks-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
   }
 }
 
