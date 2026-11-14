@@ -72,7 +72,7 @@ async function getIndex(config, sources) {
 function normalizeTitle(name) {
   return String(name || '')
     .replace(/\[[^\]]*\]|【[^】]*】|\([^)]*\)|（[^）]*）/g, '')
-    .replace(/[\s·:：,，。.、!！?？-]/g, '')
+    .replace(/[\s·:：,，。.、!！?？・?-]/g, '')
     .toLowerCase()
 }
 

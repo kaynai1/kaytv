@@ -1131,7 +1131,7 @@ function matchRegion(area: string, region: string): boolean {
 function normalizeTitle(name: string): string {
   return String(name || '')
     .replace(/\[[^\]]*\]|【[^】]*】|\([^)]*\)|（[^）]*）/g, '')
-    .replace(/[\s·:：,，。.、!！?？-]/g, '')
+    .replace(/[\s·:：,，。.、!！?？・?-]/g, '')
     .toLowerCase()
 }
 

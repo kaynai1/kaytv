@@ -119,9 +119,34 @@ const continueList = computed(() => library.recentHistory.slice(0, 14))
 /** 全量片单里按类型归类的补充条目，用来覆盖被拆成多个分类的短剧题材 */
 const extraByType = ref<Record<string, VodItem[]>>({})
 
+const RECOMMEND_TYPES = new Set(['movie', 'tv'])
+const CURRENT_YEAR = new Date().getFullYear()
+
+function yearOf(item: VodItem): number {
+  const match = /(19|20)\d{2}/.exec(item.year || '')
+  return match ? Number(match[0]) : 0
+}
+
+/** 源站常把未上映的项目标成未来年份，推荐只认已经发行的年份 */
+function releaseYear(item: VodItem): number {
+  const year = yearOf(item)
+  return year > 1900 && year <= CURRENT_YEAR ? year : 0
+}
+
+/** 推荐位只收电影和电视剧，按最新年份、最近更新排，老片和综艺动漫不占首屏 */
+const recommendItems = computed(() => {
+  const pool = items.value.filter((item) => RECOMMEND_TYPES.has(item.contentType || ''))
+  if (!pool.length) return items.value
+  return [...pool].sort(
+    (a, b) =>
+      releaseYear(b) - releaseYear(a) || (b.time || 0) - (a.time || 0) || scoreOf(b) - scoreOf(a)
+  )
+})
+
 /** 分类页严格按识别到的类型过滤，短剧不会再混进电影和剧集 */
 const visibleItems = computed(() => {
-  if (!content.value || content.value === 'all') return items.value
+  if (!content.value) return recommendItems.value
+  if (content.value === 'all') return items.value
   const base = items.value.filter((item) => item.contentType === content.value)
   const extra = extraByType.value[content.value] || []
   const seen = new Set(base.map((item) => `${item.sourceId}:${item.id}`))
@@ -168,25 +193,15 @@ function byHot(a: VodItem, b: VodItem): number {
 
 const ranked = computed(() => [...items.value].sort(byHot))
 
-const HERO_TYPE_RE = /电影|电视剧|连续剧|剧集|国产剧|港剧|美剧|韩剧|日剧|动漫|综艺|纪录片|短剧/
-const SPORTS_RE =
-  /赛事|NBA|CBA|英超|西甲|德甲|意甲|法甲|中超|足球|篮球|排球|乒乓球|羽毛球|网球|WTA|ATP|电竞|直播/i
-
-function heroRank(item: VodItem): number {
-  let value = scoreOf(item)
-  if (HERO_TYPE_RE.test(item.typeName || '')) value += 3
-  if (/\d{4}/.test(item.year || '')) value += 1
-  if (item.contentType === 'short') value -= 8
-  if (SPORTS_RE.test(item.name)) value -= 30
-  return value
-}
-
-/** 精选位只取一部：优先有海报、有年份、非短剧的条目 */
+/** 精选位跟着最新发布走：先锁定最新发行年份，再在同一年里挑评分和热度最高的 */
 const featured = computed<VodItem | null>(() => {
-  const pool = items.value
-    .filter((item) => !!item.pic)
-    .sort((a, b) => heroRank(b) - heroRank(a))
-  return pool[0] || ranked.value[0] || null
+  const pool = recommendItems.value.filter((item) => !!item.pic)
+  if (!pool.length) return ranked.value[0] || null
+  const newestYear = Math.max(...pool.map(releaseYear))
+  const newest = pool.filter((item) => releaseYear(item) === newestYear)
+  return newest.sort(
+    (a, b) => scoreOf(b) - scoreOf(a) || (b.time || 0) - (a.time || 0)
+  )[0]
 })
 const featuredType = computed(
   () => contentTypeName(featured.value?.contentType || '') || featured.value?.typeName || ''
@@ -203,6 +218,10 @@ const featuredSrc = computed(() => {
   }
   return mediaUrl(featured.value?.pic || '')
 })
+/** TV / 桌面端首推卡用同一张海报做模糊背景 */
+const heroStyle = computed(() =>
+  featuredSrc.value ? { '--hero-art': `url(${JSON.stringify(featuredSrc.value)})` } : undefined
+)
 const featuredFavorited = computed(() => {
   const item = featured.value
   if (!item) return false
@@ -532,7 +551,7 @@ watch(
           </div>
         </section>
 
-        <section v-if="featured" class="mm-hero">
+        <section v-if="featured" class="mm-hero" :style="heroStyle">
           <button class="mm-hero-poster" type="button" data-nav @click="openDetail(featured)">
             <img
               v-if="featuredSrc && !featuredFailed"
@@ -1656,7 +1675,12 @@ watch(
 }
 
 .mm-hero-kicker {
+  align-self: flex-start;
   max-width: 100%;
+  padding: 4px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
   font-size: 10.5px;
   font-weight: 700;
   color: #6ee7b7;
@@ -1995,7 +2019,82 @@ watch(
 }
 
 .tv-mode .mm-hero {
-  display: none;
+  position: relative;
+  height: 236px;
+  margin-top: 18px;
+  padding: 18px;
+  gap: 20px;
+  overflow: hidden;
+  border-color: rgba(255, 255, 255, 0.16);
+  border-radius: 22px;
+  background: linear-gradient(180deg, rgba(20, 26, 24, 0.9), rgba(11, 15, 14, 0.96));
+}
+
+.tv-mode .mm-hero::before {
+  content: '';
+  position: absolute;
+  inset: -34px;
+  background-image: var(--hero-art);
+  background-size: cover;
+  background-position: center 32%;
+  filter: blur(30px) saturate(1.25);
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.tv-mode .mm-hero::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(90deg, rgba(8, 12, 11, 0.16) 0%, rgba(8, 12, 11, 0.52) 54%, rgba(8, 12, 11, 0.92) 100%),
+    linear-gradient(180deg, rgba(8, 12, 11, 0.08), rgba(8, 12, 11, 0.42));
+  pointer-events: none;
+}
+
+.tv-mode .mm-hero > * {
+  position: relative;
+  z-index: 1;
+}
+
+.tv-mode .mm-hero-poster {
+  width: 148px;
+  height: 200px;
+  border-radius: 14px;
+}
+
+.tv-mode .mm-hero-info {
+  justify-content: center;
+}
+
+.tv-mode .mm-hero-kicker {
+  padding: 6px 13px;
+  font-size: 12px;
+  color: #9fe8c8;
+}
+
+.tv-mode .mm-hero-title {
+  margin-top: 8px;
+  font-size: 30px;
+  -webkit-line-clamp: 1;
+}
+
+.tv-mode .mm-hero-chips {
+  margin-top: 10px;
+  max-height: none;
+  gap: 6px;
+}
+
+.tv-mode .mm-hero-chips span {
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
+.tv-mode .mm-hero-play {
+  align-self: flex-end;
+  height: 44px;
+  padding: 0 22px;
+  font-size: 14px;
 }
 
 .tv-mode .mm-catrow {
