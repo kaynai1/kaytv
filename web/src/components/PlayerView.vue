@@ -2941,7 +2941,7 @@ onBeforeUnmount(() => {
   transform: translateY(-50%);
   border-radius: 50%;
   background: #fff;
-  box-shadow: 0 0 0 3px rgba(229, 9, 20, 0.3);
+  box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.35);
 }
 .progress-input {
   position: absolute;
@@ -3241,7 +3241,7 @@ onBeforeUnmount(() => {
   padding: 7px 12px;
 }
 .drawer-lines .chip.official {
-  border-color: rgba(229, 9, 20, 0.35);
+  border-color: rgba(10, 132, 255, 0.38);
 }
 .badge-4k {
   padding: 1px 5px;
@@ -3283,8 +3283,8 @@ onBeforeUnmount(() => {
   box-shadow: inset 0 0 0 2px var(--accent);
 }
 .drawer-item.is-current {
-  border-color: rgba(229, 9, 20, 0.5);
-  background: rgba(229, 9, 20, 0.1);
+  border-color: rgba(10, 132, 255, 0.55);
+  background: rgba(10, 132, 255, 0.14);
   color: var(--accent);
 }
 .drawer-item-name {
@@ -3299,7 +3299,7 @@ onBeforeUnmount(() => {
   color: var(--muted-2);
 }
 .drawer-item.is-current .drawer-item-meta {
-  color: rgba(229, 9, 20, 0.8);
+  color: rgba(61, 155, 255, 0.9);
 }
 .drawer-episodes {
   display: grid;

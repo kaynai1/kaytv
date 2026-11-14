@@ -111,9 +111,9 @@ async function submit() {
   place-items: center;
   width: 44px;
   height: 44px;
-  border-radius: 6px;
-  background: rgba(229, 9, 20, 0.16);
-  color: var(--accent);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text);
 }
 .login-title {
   margin: 0;

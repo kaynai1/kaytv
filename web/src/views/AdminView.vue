@@ -1669,12 +1669,12 @@ select.input {
   transition: transform 0.18s ease;
 }
 .switch.on {
-  background: rgba(229, 9, 20, 0.22);
-  border-color: rgba(229, 9, 20, 0.45);
+  background: rgba(10, 132, 255, 0.32);
+  border-color: rgba(10, 132, 255, 0.6);
 }
 .switch.on .knob {
   transform: translateX(18px);
-  background: var(--accent);
+  background: #f5f5f7;
 }
 .switch:focus {
   box-shadow: 0 0 0 3px var(--accent);
@@ -1806,8 +1806,8 @@ select.input {
 }
 .chip.active {
   color: var(--text);
-  border-color: rgba(229, 9, 20, 0.55);
-  background: rgba(229, 9, 20, 0.14);
+  border-color: rgba(255, 255, 255, 0.42);
+  background: rgba(255, 255, 255, 0.08);
 }
 .chip:focus-visible {
   outline: 2px solid var(--accent);
@@ -1993,8 +1993,8 @@ select.input {
 }
 .seg.active {
   color: var(--text);
-  border-color: rgba(229, 9, 20, 0.55);
-  background: rgba(229, 9, 20, 0.14);
+  border-color: rgba(255, 255, 255, 0.42);
+  background: rgba(255, 255, 255, 0.08);
 }
 .seg:focus-visible {
   outline: 2px solid var(--accent);

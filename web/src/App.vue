@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, watch } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import AppIcon from './components/AppIcon.vue'
 import PlayerView from './components/PlayerView.vue'
@@ -20,8 +20,6 @@ const cloud = useCloudStore()
 const route = useRoute()
 const router = useRouter()
 
-const clock = ref('')
-let clockTimer = 0
 let cloudTimer = 0
 
 const appVersion = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : '0.0.0'
@@ -47,20 +45,21 @@ const forcedUpdateUrl = computed(
   () => cloud.updateUrl || 'https://github.com/kaynai1/kaytv/releases/latest'
 )
 
-/* Netflix 导航：只在首页顶部悬浮透明，其余情况或滚动后转实心 */
-const scrolled = ref(false)
-const heroPage = computed(() => route.name === 'movies')
-const transparentNav = computed(() => heroPage.value && !scrolled.value)
+/* MarcoMovie 导航：桌面/TV 用右侧竖向玻璃 Dock，手机用底部悬浮四栏 */
+const railItems = [
+  { to: '/', label: '首页', icon: 'home' },
+  { to: '/search', label: '搜索', icon: 'search' },
+  { to: '/hot', label: '热门', icon: 'flame' },
+  { to: '/live', label: '直播', icon: 'live' },
+  { to: '/favorites', label: '片库', icon: 'bookmark' },
+  { to: '/settings', label: '设置', icon: 'settings' }
+]
 
-function onScroll() {
-  scrolled.value = window.scrollY > 24
-}
-
-const navItems = [
-  { to: '/', label: '影视专区', icon: 'film' },
-  { to: '/live', label: '直播频道', icon: 'live' },
-  { to: '/hot', label: '最新热门', icon: 'flame' },
-  { to: '/favorites', label: '我的清单', icon: 'bookmark' }
+const dockItems = [
+  { to: '/', label: '首页', icon: 'home' },
+  { to: '/live', label: '直播', icon: 'live' },
+  { to: '/favorites', label: '片库', icon: 'bookmark' },
+  { to: '/settings', label: '设置', icon: 'settings' }
 ]
 
 const ROOT_PAGES = new Set(['movies', 'live', 'hot', 'favorites'])
@@ -76,21 +75,6 @@ const showOffline = computed(
     !isAdmin.value &&
     !isAuthPage.value
 )
-const serverLabel = computed(() => {
-  if (settings.standalone) return '内置模式'
-  if (!settings.checked) return '连接中…'
-  if (!settings.online) return '未连接服务端'
-  try {
-    return new URL(settings.displayServer).host
-  } catch {
-    return '服务端在线'
-  }
-})
-
-function updateClock() {
-  const now = new Date()
-  clock.value = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
-}
 
 function isTypingTarget(event: KeyboardEvent): boolean {
   const target = event.target as HTMLElement | null
@@ -126,7 +110,6 @@ watch(
   async () => {
     if (player.open) return
     await nextTick()
-    onScroll()
     const active = document.activeElement as HTMLElement | null
     if (settings.tvMode && (!active || active === document.body || active === document.documentElement)) {
       focusFirstNav()
@@ -146,14 +129,10 @@ watch(
 useSpatialNav()
 
 onMounted(async () => {
-  updateClock()
-  clockTimer = window.setInterval(updateClock, 15000)
   cloudTimer = window.setInterval(() => {
     if (cloud.configured) void cloud.sync({ silent: true })
   }, 30 * 60 * 1000)
   window.addEventListener('keydown', onKeydown)
-  window.addEventListener('scroll', onScroll, { passive: true })
-  onScroll()
   settings.autoTvMode()
   await settings.init()
   void cloud.init()
@@ -168,80 +147,23 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
-  window.clearInterval(clockTimer)
   window.clearInterval(cloudTimer)
   window.removeEventListener('keydown', onKeydown)
-  window.removeEventListener('scroll', onScroll)
 })
 </script>
 
 <template>
   <div class="app-shell" :class="{ 'tv-mode': settings.tvMode }">
-    <header
-      class="app-header"
-      :class="{ 'admin-mode': isAdmin, solid: !transparentNav }"
-    >
+    <header v-if="isAdmin || isAuthPage" class="app-header minimal">
       <RouterLink class="brand" to="/" data-nav>
         <span class="brand-mark"><AppIcon name="play" :size="18" /></span>
         <span class="brand-text">
           <span class="brand-name">{{ settings.siteName }}</span>
-          <span class="brand-sub">影视 · 直播 · 清单</span>
         </span>
       </RouterLink>
-
-      <nav v-if="!isAdmin && !isAuthPage" class="nav">
-        <RouterLink
-          v-for="item in navItems"
-          :key="item.to"
-          :to="item.to"
-          class="nav-link"
-          :class="{ 'nav-live': item.to === '/live' }"
-          data-nav
-        >
-          <AppIcon class="nav-icon" :name="item.icon" :size="19" />
-          <span class="nav-label">{{ item.label }}</span>
-          <span v-if="item.to === '/live'" class="nav-badge">LIVE</span>
-          <span v-else-if="item.to === '/favorites' && library.favorites.length" class="nav-count">
-            {{ library.favorites.length }}
-          </span>
-        </RouterLink>
-      </nav>
-      <span v-else class="badge accent admin-badge">管理后台</span>
-
+      <span v-if="isAdmin" class="admin-badge">管理后台</span>
       <div class="header-right">
-        <RouterLink
-          v-if="!isAdmin && !isAuthPage"
-          class="server-chip"
-          to="/settings"
-          data-nav
-          :title="settings.displayServer"
-        >
-          <span class="status-dot" :class="{ online: settings.online }" />
-          <span>{{ serverLabel }}</span>
-        </RouterLink>
-        <span v-if="!isAdmin && !isAuthPage" class="clock">{{ clock }}</span>
-        <template v-if="!isAdmin && !isAuthPage">
-          <RouterLink class="header-icon-btn" to="/feedback" data-nav title="求片与反馈">
-            <AppIcon name="message" :size="17" />
-          </RouterLink>
-          <RouterLink class="header-icon-btn" to="/search" data-nav title="聚合搜索">
-            <AppIcon name="search" :size="17" />
-          </RouterLink>
-          <button
-            class="header-icon-btn"
-            :class="{ 'tv-on': settings.tvMode }"
-            data-nav
-            type="button"
-            :title="settings.tvMode ? '退出 TV 大屏模式' : 'TV 大屏模式：更大字号与红色焦点框'"
-            @click="settings.toggleTvMode()"
-          >
-            <AppIcon name="tv" :size="17" />
-          </button>
-          <RouterLink class="header-icon-btn" to="/settings" data-nav title="设置">
-            <AppIcon name="settings" :size="17" />
-          </RouterLink>
-        </template>
-        <RouterLink v-else class="btn sm" to="/" data-nav>
+        <RouterLink class="btn sm" to="/" data-nav>
           <AppIcon name="back" :size="16" />
           返回观看
         </RouterLink>
@@ -270,6 +192,52 @@ onBeforeUnmount(() => {
       <RouterView />
     </main>
 
+    <nav
+      v-if="!isAdmin && !isAuthPage"
+      class="mm-rail"
+      aria-label="主导航"
+    >
+      <RouterLink class="mm-rail-logo" to="/" data-nav aria-label="首页">
+        <AppIcon name="play" :size="20" />
+      </RouterLink>
+      <span class="mm-rail-line" />
+      <RouterLink
+        v-for="item in railItems"
+        :key="item.to"
+        :to="item.to"
+        class="mm-rail-link"
+        active-class="on"
+        exact-active-class="on"
+        data-nav
+      >
+        <span class="mm-rail-glyph">
+          <AppIcon :name="item.icon" :size="21" />
+          <span v-if="item.to === '/live'" class="mm-live-dot" />
+          <span v-else-if="item.to === '/favorites' && library.favorites.length" class="mm-count-dot" />
+        </span>
+        <span class="mm-rail-label">{{ item.label }}</span>
+      </RouterLink>
+    </nav>
+
+    <nav
+      v-if="!isAdmin && !isAuthPage"
+      class="mm-dock"
+      aria-label="主导航"
+    >
+      <RouterLink
+        v-for="item in dockItems"
+        :key="item.to"
+        :to="item.to"
+        class="mm-dock-link"
+        active-class="on"
+        exact-active-class="on"
+        data-nav
+      >
+        <AppIcon :name="item.icon" :size="22" />
+        <span>{{ item.label }}</span>
+      </RouterLink>
+    </nav>
+
     <PlayerView />
     <ToastHost />
 
@@ -293,13 +261,234 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.admin-badge {
-  margin-left: 4px;
-}
-.admin-mode .brand-mark {
-  opacity: 0.75;
+/* ---------- 管理后台 / 登录的极简顶栏 ---------- */
+.app-header.minimal {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  height: 62px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 clamp(16px, 3vw, 40px);
+  background: rgba(12, 14, 13, 0.78);
+  border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
 }
 
+.admin-badge {
+  margin-left: 4px;
+  padding: 4px 11px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--glass-border);
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+/* ---------- 右侧玻璃 Dock（桌面 / TV） ---------- */
+.mm-rail {
+  position: fixed;
+  right: 16px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 60;
+  display: none;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+  width: 78px;
+  padding: 10px 8px;
+  border-radius: var(--radius-dock);
+  background: linear-gradient(180deg, rgba(30, 36, 33, 0.72), rgba(14, 18, 17, 0.74));
+  border: 1px solid var(--glass-border);
+  box-shadow:
+    0 26px 64px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  backdrop-filter: blur(26px) saturate(1.5);
+  -webkit-backdrop-filter: blur(26px) saturate(1.5);
+}
+
+@media (min-width: 900px) {
+  .mm-rail {
+    display: flex;
+  }
+}
+
+.mm-rail-logo {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 44px;
+  margin-bottom: 2px;
+  border-radius: 16px;
+  color: #101013;
+  background: linear-gradient(160deg, #ffffff, #cfd4d2);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.36);
+  outline: none;
+  text-decoration: none;
+}
+
+.mm-rail-line {
+  height: 1px;
+  margin: 4px 6px 6px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.mm-rail-link {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  min-height: 54px;
+  border-radius: 17px;
+  color: #a1a1aa;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-decoration: none;
+  outline: none;
+  transition:
+    background 0.16s ease,
+    color 0.16s ease,
+    transform 0.16s ease;
+}
+
+.mm-rail-link:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.mm-rail-link.on {
+  color: var(--text);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0.1));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+
+.mm-rail-link.on .mm-rail-glyph {
+  color: var(--accent);
+}
+
+.mm-rail-glyph {
+  position: relative;
+  display: grid;
+  place-items: center;
+}
+
+.mm-rail-label {
+  line-height: 1.1;
+}
+
+.mm-live-dot,
+.mm-count-dot {
+  position: absolute;
+  top: -2px;
+  right: -6px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--live);
+  box-shadow: 0 0 0 2px rgba(10, 15, 13, 0.8);
+}
+
+.mm-count-dot {
+  background: var(--accent);
+}
+
+.tv-mode .mm-rail {
+  width: 92px;
+  padding: 12px 9px;
+  border-radius: 30px;
+}
+
+.tv-mode .mm-rail-logo {
+  height: 52px;
+  border-radius: 18px;
+}
+
+.tv-mode .mm-rail-link {
+  min-height: 66px;
+  border-radius: 20px;
+  font-size: 12px;
+}
+
+.tv-mode .mm-rail-link:focus {
+  background: #f5f5f7;
+  color: #101013;
+  outline: 2px solid #fff;
+  outline-offset: 3px;
+}
+
+.tv-mode .mm-rail-link:focus .mm-rail-glyph {
+  color: #0a84ff;
+}
+
+/* ---------- 手机底部悬浮玻璃 Dock ---------- */
+.mm-dock {
+  position: fixed;
+  left: 50%;
+  bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  width: min(288px, calc(100vw - 32px));
+  height: 64px;
+  padding: 6px;
+  border-radius: var(--radius-dock);
+  background: linear-gradient(180deg, rgba(27, 33, 30, 0.88), rgba(12, 17, 15, 0.86));
+  border: 1px solid var(--glass-border);
+  box-shadow:
+    0 22px 54px rgba(0, 0, 0, 0.58),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  backdrop-filter: blur(26px) saturate(1.55);
+  -webkit-backdrop-filter: blur(26px) saturate(1.55);
+}
+
+@media (min-width: 900px) {
+  .mm-dock {
+    display: none;
+  }
+}
+
+.mm-dock-link {
+  flex: 1;
+  height: 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  border-radius: 20px;
+  color: #e5e7eb;
+  font-size: 10.5px;
+  font-weight: 500;
+  text-decoration: none;
+  outline: none;
+  transition:
+    background 0.16s ease,
+    color 0.16s ease;
+}
+
+.mm-dock-link.on {
+  color: var(--accent);
+  font-weight: 700;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0.1));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3);
+}
+
+.mm-dock-link:focus-visible {
+  outline: 2px solid #f5f5f7;
+  outline-offset: 2px;
+}
+
+/* ---------- 公告 / 离线提示 ---------- */
 .cloud-banner {
   display: flex;
   align-items: flex-start;
@@ -372,15 +561,17 @@ onBeforeUnmount(() => {
   display: grid;
   place-items: center;
   padding: 24px;
-  background: rgba(5, 6, 9, 0.86);
-  backdrop-filter: blur(14px);
+  background: rgba(4, 6, 5, 0.7);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
 }
 .force-card {
   width: min(460px, 100%);
   padding: 30px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 14px;
-  background: #14171d;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  background: var(--glass-bg-strong);
+  box-shadow: 0 28px 70px rgba(0, 0, 0, 0.5);
   text-align: center;
 }
 .force-icon {
@@ -390,7 +581,7 @@ onBeforeUnmount(() => {
   height: 52px;
   margin-bottom: 14px;
   border-radius: 50%;
-  background: rgba(229, 9, 20, 0.14);
+  background: rgba(10, 132, 255, 0.16);
   color: var(--accent);
 }
 .force-card h2 {
@@ -410,7 +601,7 @@ onBeforeUnmount(() => {
   gap: 10px;
 }
 
-@media (max-width: 720px) {
+@media (max-width: 899px) {
   .cloud-banner {
     padding: 9px 14px;
   }

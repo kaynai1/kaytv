@@ -140,8 +140,8 @@ const is4k = computed(() => /4k|2160|uhd|超高清/i.test(props.channel.name))
   white-space: nowrap;
 }
 .channel-tile.active {
-  border-color: var(--accent);
-  background: rgba(229, 9, 20, 0.08);
+  border-color: rgba(255, 255, 255, 0.5);
+  background: rgba(255, 255, 255, 0.08);
 }
 .channel-tile.active .channel-name {
   color: #fff;

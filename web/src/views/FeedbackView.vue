@@ -189,9 +189,9 @@ function fmt(ms: number) {
   flex: none;
   width: 48px;
   height: 48px;
-  border-radius: 8px;
-  background: rgba(229, 9, 20, 0.14);
-  color: var(--accent);
+  border-radius: 14px;
+  background: rgba(10, 132, 255, 0.16);
+  color: var(--accent-strong);
 }
 .feedback-title {
   margin: 0;
@@ -226,8 +226,8 @@ function fmt(ms: number) {
   font-size: 11.5px;
 }
 .kind-chip.active {
-  border-color: var(--accent);
-  background: rgba(229, 9, 20, 0.12);
+  border-color: rgba(10, 132, 255, 0.55);
+  background: rgba(10, 132, 255, 0.16);
 }
 .field {
   display: flex;

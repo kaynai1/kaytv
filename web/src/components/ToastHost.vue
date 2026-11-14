@@ -35,8 +35,8 @@ import AppIcon from './AppIcon.vue'
   gap: 9px;
   padding: 10px 16px;
   border-radius: 11px;
-  background: rgba(20, 23, 30, 0.95);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(22, 27, 26, 0.86);
+  border: 1px solid rgba(255, 255, 255, 0.14);
   box-shadow: 0 14px 40px rgba(0, 0, 0, 0.5);
   font-size: 13px;
   color: var(--text);
@@ -61,5 +61,10 @@ import AppIcon from './AppIcon.vue'
 .toast-leave-to {
   opacity: 0;
   transform: translateY(8px);
+}
+@media (max-width: 899px) {
+  .toast-host {
+    bottom: calc(var(--tabbar-h) + 18px);
+  }
 }
 </style>

@@ -162,7 +162,7 @@ watch(() => [sourceId.value, vodId.value].join('/'), load)
 </script>
 
 <template>
-  <div class="page detail-page">
+  <div class="detail-page">
     <div v-if="loading" class="detail-loading">
       <span class="spinner" />
       正在读取影片信息…
@@ -174,8 +174,38 @@ watch(() => [sourceId.value, vodId.value].join('/'), load)
     </EmptyState>
 
     <template v-else-if="detail">
-      <div class="detail-hero">
-        <div class="hero-poster">
+      <section class="dd-hero">
+        <div class="dd-backdrop">
+          <img
+            v-if="(detail.pic || posterUrl) && !posterFailed"
+            :src="posterUrl"
+            alt=""
+            aria-hidden="true"
+            referrerpolicy="no-referrer"
+          />
+          <span class="dd-fade" />
+        </div>
+
+        <div class="dd-topbar">
+          <button class="dd-circle" data-nav type="button" aria-label="返回" @click="goBack">
+            <AppIcon name="back" :size="20" />
+          </button>
+          <div class="dd-top-actions">
+            <span class="dd-source">{{ detail.sourceName }}</span>
+            <button
+              class="dd-circle"
+              :class="{ on: isFavorite }"
+              data-nav
+              type="button"
+              :title="isFavorite ? '取消收藏' : '收藏'"
+              @click="toggleFavorite"
+            >
+              <AppIcon name="heart" :size="18" />
+            </button>
+          </div>
+        </div>
+
+        <div class="dd-poster">
           <img
             v-if="(detail.pic || posterUrl) && !posterFailed"
             :src="posterUrl"
@@ -183,64 +213,59 @@ watch(() => [sourceId.value, vodId.value].join('/'), load)
             referrerpolicy="no-referrer"
             @error="onPosterError"
           />
-          <div v-else class="hero-fallback">
+          <div v-else class="dd-poster-fallback">
             {{ detail.name.slice(0, 1) }}
           </div>
         </div>
+      </section>
 
-        <div class="hero-info">
-          <div class="hero-top">
-            <button class="btn sm ghost back-btn" data-nav type="button" @click="goBack">
-              <AppIcon name="back" :size="16" />
-              返回
-            </button>
-            <span class="badge accent">{{ detail.sourceName }}</span>
-          </div>
-          <h1 class="detail-title">{{ detail.name }}</h1>
-          <div class="detail-meta">
-            <span v-if="detail.year">{{ detail.year }}</span>
-            <span v-if="detail.area">{{ detail.area }}</span>
-            <span v-if="detail.typeName">{{ detail.typeName }}</span>
-            <span v-if="detail.score" class="score">{{ detail.score }} 分</span>
-            <span v-if="detail.remarks" class="badge">{{ detail.remarks }}</span>
-          </div>
-          <p class="detail-credits">
-            <span v-if="detail.director">导演：{{ detail.director }}</span>
-            <span v-if="detail.actors">主演：{{ detail.actors }}</span>
-          </p>
-          <p class="detail-content" :class="{ expanded: showFull }">
-            {{ content || '暂无简介' }}
-          </p>
-          <button
-            v-if="canExpand"
-            class="btn sm ghost expand-btn"
-            data-nav
-            type="button"
-            @click="showFull = !showFull"
-          >
-            {{ showFull ? '收起' : '展开全部' }}
-          </button>
+      <div class="dd-body">
+        <h1 class="dd-title">{{ detail.name }}</h1>
 
-          <div class="hero-actions">
-            <button class="btn primary play-btn" data-nav type="button" @click="play(true)">
-              <AppIcon name="play" :size="18" />
-              {{ resumeText ? '继续播放' : '立即播放' }}
-            </button>
-            <button class="btn" data-nav type="button" @click="toggleFavorite">
-              <AppIcon name="heart" :size="17" />
-              {{ isFavorite ? '已收藏' : '收藏' }}
-            </button>
-            <span v-if="resumeText" class="resume-hint">{{ resumeText }}</span>
-          </div>
+        <div class="dd-meta">
+          <span v-if="detail.score" class="dd-score">{{ detail.score }} 分</span>
+          <span v-if="detail.year" class="dd-pill">{{ detail.year }}</span>
+          <span v-if="detail.area" class="dd-pill">{{ detail.area }}</span>
+          <span v-if="detail.typeName" class="dd-pill">{{ detail.typeName }}</span>
+          <span v-if="detail.remarks" class="dd-pill accent">{{ detail.remarks }}</span>
         </div>
-      </div>
 
-      <section class="episodes-section">
-        <div class="episodes-head">
-          <h2 class="section-title">选集 <span class="hint">共 {{ line?.episodes.length || 0 }} 集</span></h2>
-          <div v-if="detail.lines.length > 1" class="line-groups">
-            <div v-for="group in lineGroups" :key="group.label" class="line-group">
-              <span class="line-group-title">{{ group.label }}</span>
+        <p v-if="detail.director || detail.actors" class="dd-credits">
+          <span v-if="detail.director">导演 {{ detail.director }}</span>
+          <span v-if="detail.actors">主演 {{ detail.actors }}</span>
+        </p>
+
+        <div class="dd-play-row">
+          <button class="dd-play" data-nav type="button" @click="play(true)">
+            <AppIcon name="play" :size="18" />
+            {{ resumeText ? '继续播放' : '立即播放' }}
+          </button>
+          <span v-if="resumeText" class="dd-resume">{{ resumeText }}</span>
+        </div>
+
+        <p class="dd-desc" :class="{ expanded: showFull }">
+          {{ content || '暂无简介' }}
+        </p>
+        <button
+          v-if="canExpand"
+          class="dd-expand"
+          data-nav
+          type="button"
+          @click="showFull = !showFull"
+        >
+          {{ showFull ? '收起' : '展开全部' }}
+          <AppIcon :name="showFull ? 'up' : 'down'" :size="14" />
+        </button>
+
+        <section class="dd-episodes">
+          <div class="dd-ep-head">
+            <h2>选集</h2>
+            <span>共 {{ line?.episodes.length || 0 }} 集</span>
+          </div>
+
+          <div v-if="detail.lines.length > 1" class="dd-lines">
+            <div v-for="group in lineGroups" :key="group.label" class="dd-line-group">
+              <span class="dd-line-label">{{ group.label }}</span>
               <div class="chip-row line-row hide-scrollbar">
                 <button
                   v-for="entry in group.entries"
@@ -258,47 +283,49 @@ watch(() => [sourceId.value, vodId.value].join('/'), load)
               </div>
             </div>
           </div>
-        </div>
 
-        <div v-if="line?.episodes.length" class="episode-grid">
-          <button
-            v-for="(episode, index) in line.episodes"
-            :key="`${index}-${episode.url}`"
-            class="episode-btn"
-            :class="{
-              watched:
-                history &&
-                history.lineIndex === activeLine &&
-                history.episodeIndex === index
-            }"
-            data-nav
-            type="button"
-            @click="playEpisode(index)"
+          <div v-if="line?.episodes.length" class="dd-ep-grid">
+            <button
+              v-for="(episode, index) in line.episodes"
+              :key="`${index}-${episode.url}`"
+              class="dd-ep"
+              :class="{
+                watched:
+                  history &&
+                  history.lineIndex === activeLine &&
+                  history.episodeIndex === index
+              }"
+              data-nav
+              type="button"
+              @click="playEpisode(index)"
+            >
+              <span class="dd-ep-num">{{ String(index + 1).padStart(2, '0') }}</span>
+              <span class="dd-ep-name">{{ episode.name }}</span>
+            </button>
+          </div>
+
+          <EmptyState
+            v-else
+            title="该源没有可直接播放的线路"
+            message="这个采集站只提供了分享页或网盘链接，KayTV 暂不支持解析。可以换一个影视源搜索同名影片。"
+            icon="warn"
           >
-            {{ episode.name }}
-          </button>
-        </div>
+            <RouterLink class="btn" to="/search" data-nav>换源搜索</RouterLink>
+          </EmptyState>
+        </section>
 
-        <EmptyState
-          v-else
-          title="该源没有可直接播放的线路"
-          message="这个采集站只提供了分享页或网盘链接，KayTV 暂不支持解析。可以换一个影视源搜索同名影片。"
-          icon="warn"
-        >
-          <RouterLink class="btn" to="/search" data-nav>换源搜索</RouterLink>
-        </EmptyState>
-      </section>
-
-      <p class="detail-foot">
-        片源由 {{ detail.sourceName }} 提供{{ settings.standalone ? '' : '，播放地址经服务端代理' }}；片源可用性取决于上游站点。
-      </p>
+        <p class="dd-foot">
+          片源由 {{ detail.sourceName }} 提供{{ settings.standalone ? '' : '，播放地址经服务端代理' }}；片源可用性取决于上游站点。
+        </p>
+      </div>
     </template>
   </div>
 </template>
 
 <style scoped>
 .detail-page {
-  max-width: 1500px;
+  width: 100%;
+  padding-bottom: 90px;
 }
 .detail-loading {
   display: flex;
@@ -309,227 +336,511 @@ watch(() => [sourceId.value, vodId.value].join('/'), load)
   color: var(--muted);
   font-size: 13px;
 }
-.detail-hero {
+
+/* ---------- 全幅海报头 ---------- */
+.dd-hero {
   position: relative;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  min-height: clamp(400px, 62vh, 660px);
+  padding: 68px 20px 0;
+  overflow: hidden;
+}
+
+.dd-backdrop {
+  position: absolute;
+  inset: 0;
+}
+
+.dd-backdrop img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  filter: blur(42px) brightness(0.46) saturate(1.2);
+  transform: scale(1.22);
+}
+
+.dd-fade {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(180deg, rgba(7, 11, 9, 0.5) 0%, rgba(7, 11, 9, 0.06) 34%, rgba(7, 11, 9, 0.86) 84%, var(--bg) 100%),
+    radial-gradient(80% 60% at 50% 20%, transparent 30%, rgba(6, 10, 8, 0.55) 100%);
+}
+
+.dd-topbar {
+  position: absolute;
+  top: calc(14px + var(--kaytv-safe-top, env(safe-area-inset-top, 0px)));
+  left: 16px;
+  right: 16px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.dd-top-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dd-circle {
   display: grid;
-  grid-template-columns: 236px minmax(0, 1fr);
-  gap: clamp(22px, 3vw, 40px);
-  padding: clamp(20px, 2.4vw, 34px);
-  border-radius: 6px;
-  border: 1px solid var(--line);
-  background: var(--surface);
-  overflow: hidden;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(10, 14, 12, 0.42);
+  color: var(--text);
+  cursor: pointer;
+  outline: none;
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  transition:
+    background 0.16s ease,
+    color 0.16s ease;
 }
-.hero-poster {
+
+.dd-circle:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.dd-circle.on {
+  background: #f5f5f7;
+  border-color: transparent;
+  color: #101013;
+}
+
+.dd-source {
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  max-width: 46vw;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(10, 14, 12, 0.42);
+  color: #e5e7eb;
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
+.dd-poster {
   position: relative;
-  z-index: 1;
+  z-index: 2;
+  width: min(232px, 52vw);
   aspect-ratio: 2 / 3;
-  border-radius: 4px;
+  border-radius: 20px;
   overflow: hidden;
-  background: var(--surface-2);
-  border: 1px solid var(--line);
+  background: #1e2623;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow:
+    0 34px 80px rgba(0, 0, 0, 0.62),
+    0 0 0 1px rgba(0, 0, 0, 0.2);
 }
-.hero-poster img {
+
+.dd-poster img {
   width: 100%;
   height: 100%;
   object-fit: cover;
   display: block;
 }
-.hero-fallback {
-  width: 100%;
-  height: 100%;
+
+.dd-poster-fallback {
   display: grid;
   place-items: center;
-  background: var(--surface-3);
-  font-size: 64px;
+  width: 100%;
+  height: 100%;
+  font-size: 72px;
   font-weight: 600;
   color: rgba(255, 255, 255, 0.4);
 }
-.hero-info {
+
+/* ---------- 正文 ---------- */
+.dd-body {
   position: relative;
-  z-index: 1;
-  min-width: 0;
+  z-index: 2;
+  width: min(820px, 100%);
+  margin: 22px auto 0;
+  padding: 0 20px;
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
-}
-.hero-top {
-  display: flex;
   align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
+  text-align: center;
 }
-.back-btn {
-  margin-left: -10px;
-}
-.detail-title {
-  margin: 12px 0 10px;
-  font-size: clamp(26px, 2.6vw, 38px);
-  line-height: 1.14;
-  font-weight: 800;
+
+.dd-title {
+  margin: 0;
+  max-width: 100%;
+  font-size: clamp(26px, 3.4vw, 38px);
+  line-height: 1.16;
+  font-weight: 700;
   letter-spacing: 0;
+  text-shadow: 0 6px 30px rgba(0, 0, 0, 0.55);
 }
-.detail-meta {
+
+.dd-meta {
   display: flex;
   align-items: center;
-  gap: 8px 14px;
+  justify-content: center;
+  gap: 7px;
   flex-wrap: wrap;
-  font-size: 12.5px;
-  color: var(--muted);
+  margin-top: 12px;
 }
-.detail-meta .score {
-  color: #46d369;
+
+.dd-score {
+  display: inline-flex;
+  align-items: center;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: rgba(52, 211, 153, 0.14);
+  border: 1px solid rgba(52, 211, 153, 0.3);
+  color: #6ee7b7;
+  font-size: 11.5px;
   font-weight: 700;
 }
-.detail-credits {
-  margin: 12px 0 0;
+
+.dd-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 26px;
+  max-width: 60vw;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--glass-border);
+  background: rgba(255, 255, 255, 0.07);
+  color: #d4d4d8;
+  font-size: 11.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dd-pill.accent {
+  background: rgba(255, 255, 255, 0.9);
+  border-color: transparent;
+  color: #101013;
+}
+
+.dd-credits {
+  margin: 14px 0 0;
   display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 12.5px;
-  color: var(--muted);
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px 16px;
+  font-size: 12px;
+  color: var(--muted-2);
   line-height: 1.6;
 }
-.detail-content {
-  margin: 13px 0 0;
+
+.dd-play-row {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.dd-play {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 190px;
+  height: 50px;
+  padding: 0 30px;
+  border: 0;
+  border-radius: 999px;
+  background: #f5f5f7;
+  color: #101013;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  outline: none;
+  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.45);
+  transition:
+    background 0.16s ease,
+    transform 0.16s ease;
+}
+
+.dd-play:hover {
+  background: #ffffff;
+  transform: translateY(-1px);
+}
+
+.dd-resume {
+  font-size: 11.5px;
+  color: var(--muted-2);
+}
+
+.dd-desc {
+  margin: 20px 0 0;
+  width: 100%;
+  padding: 16px 18px;
+  border-radius: 20px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.04);
   font-size: 13.5px;
-  line-height: 1.8;
-  color: #d2d2d2;
+  line-height: 1.85;
+  color: #d7d7db;
+  text-align: left;
+  white-space: pre-line;
   display: -webkit-box;
   -webkit-line-clamp: 4;
   -webkit-box-orient: vertical;
   overflow: hidden;
-  max-width: 780px;
-  white-space: pre-line;
 }
-.detail-content.expanded {
+
+.dd-desc.expanded {
   display: block;
   overflow: visible;
 }
-.expand-btn {
-  margin-top: 6px;
-  padding-left: 0;
-  padding-right: 0;
-  min-height: 28px;
-  color: var(--accent);
-  border: 0;
-}
-.hero-actions {
-  display: flex;
+
+.dd-expand {
+  display: inline-flex;
   align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  margin-top: 20px;
-}
-.play-btn {
-  min-width: 148px;
-  min-height: 48px;
-  font-size: 15px;
-  border-radius: 4px;
-}
-.resume-hint {
+  gap: 4px;
+  margin-top: 8px;
+  padding: 4px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
   font-size: 12px;
-  color: var(--muted);
+  font-weight: 600;
+  cursor: pointer;
+  outline: none;
 }
-.episodes-section {
-  margin-top: 30px;
+
+/* ---------- 选集 ---------- */
+.dd-episodes {
+  width: 100%;
+  margin-top: 32px;
+  text-align: left;
 }
-.episodes-head {
+
+.dd-ep-head {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 20px;
-  flex-wrap: wrap;
-  margin-bottom: 14px;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 13px;
 }
-.episodes-head .section-title {
+
+.dd-ep-head h2 {
   margin: 0;
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: 0;
 }
-.line-groups {
+
+.dd-ep-head span {
+  font-size: 11.5px;
+  color: var(--muted-2);
+}
+
+.dd-lines {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-width: 100%;
+  margin-bottom: 16px;
 }
-.line-group {
+
+.dd-line-group {
   display: flex;
   align-items: baseline;
   gap: 10px;
   min-width: 0;
 }
-.line-group-title {
+
+.dd-line-label {
   flex: none;
-  font-size: 11.5px;
-  font-weight: 650;
-  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted-2);
   white-space: nowrap;
+  letter-spacing: 0.04em;
 }
+
 .line-row {
   padding-bottom: 2px;
   max-width: 100%;
 }
-.line-groups .chip.official {
-  border-color: rgba(229, 9, 20, 0.35);
+
+.dd-lines .chip.official {
+  border-color: rgba(52, 211, 153, 0.35);
 }
+
 .badge-4k {
   padding: 0 5px;
-  border-radius: 4px;
-  border: 1px solid rgba(154, 215, 255, 0.55);
-  background: rgba(8, 16, 28, 0.85);
+  border-radius: 999px;
+  border: 1px solid rgba(154, 215, 255, 0.5);
+  background: rgba(8, 16, 28, 0.7);
   color: #9ad7ff;
   font-size: 9px;
   font-weight: 800;
   line-height: 14px;
   letter-spacing: 0.4px;
 }
-.episode-grid {
+
+.dd-ep-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(94px, 1fr));
-  gap: 9px;
+  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+  gap: 10px;
 }
-.episode-btn {
-  min-height: 42px;
-  padding: 8px 10px;
-  border-radius: 4px;
-  border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.04);
+
+.dd-ep {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 3px;
+  aspect-ratio: 16 / 9;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: linear-gradient(160deg, rgba(38, 45, 42, 0.72), rgba(18, 23, 21, 0.86));
   color: var(--text);
-  font-size: 12.5px;
+  text-align: left;
   cursor: pointer;
   outline: none;
   overflow: hidden;
+  transition:
+    border-color 0.16s ease,
+    background 0.16s ease,
+    transform 0.16s ease;
+}
+
+.dd-ep:hover {
+  border-color: rgba(255, 255, 255, 0.2);
+  transform: translateY(-2px);
+}
+
+.dd-ep-num {
+  font-size: 11px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.42);
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
+.dd-ep-name {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.3;
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  transition:
-    background 0.15s ease,
-    border-color 0.15s ease;
 }
-.episode-btn:hover {
-  background: rgba(255, 255, 255, 0.08);
+
+.dd-ep.watched {
+  border-color: rgba(10, 132, 255, 0.6);
+  background: linear-gradient(160deg, rgba(16, 46, 78, 0.8), rgba(10, 22, 36, 0.9));
 }
-.episode-btn.watched {
-  border-color: rgba(229, 9, 20, 0.55);
+
+.dd-ep.watched .dd-ep-num {
   color: var(--accent);
-  background: rgba(229, 9, 20, 0.08);
 }
-.episode-btn:focus {
-  background: var(--accent);
-  border-color: transparent;
-  color: #171106;
-  font-weight: 600;
-  box-shadow: 0 0 0 3px rgba(229, 9, 20, 0.4);
+
+.dd-ep:focus {
+  border-color: rgba(245, 245, 247, 0.9);
+  box-shadow: 0 0 0 2px rgba(245, 245, 247, 0.9);
 }
-.detail-foot {
+
+.dd-foot {
   margin: 30px 0 0;
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--muted-2);
+  text-align: center;
 }
-@media (max-width: 760px) {
-  .detail-hero {
-    grid-template-columns: 1fr;
+
+@media (min-width: 900px) {
+  .dd-hero {
+    min-height: clamp(460px, 64vh, 700px);
+    padding-top: 84px;
   }
-  .hero-poster {
-    width: min(190px, 46vw);
+  .dd-poster {
+    width: 264px;
+  }
+  .dd-body {
+    margin-top: 26px;
+  }
+  .dd-topbar {
+    left: clamp(20px, 3vw, 40px);
+    right: clamp(20px, 3vw, 40px);
+  }
+  .dd-ep-grid {
+    grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  }
+}
+
+.tv-mode .dd-hero {
+  min-height: 74vh;
+}
+
+.tv-mode .dd-poster {
+  width: 340px;
+}
+
+.tv-mode .dd-title {
+  font-size: 46px;
+}
+
+.tv-mode .dd-play {
+  height: 58px;
+  min-width: 230px;
+  font-size: 18px;
+}
+
+.tv-mode .dd-ep-grid {
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+}
+
+@media (max-width: 899px) {
+  .detail-page {
+    padding-bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom, 0px) + 20px);
+  }
+}
+
+@media (max-width: 720px) {
+  .dd-hero {
+    min-height: 58vh;
+    padding: 64px 16px 0;
+  }
+  .dd-body {
+    margin-top: 18px;
+    padding: 0 16px;
+  }
+  .dd-title {
+    font-size: 25px;
+  }
+  .dd-desc {
+    font-size: 13px;
+    padding: 14px 15px;
+  }
+  .dd-ep-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .dd-ep {
+    padding: 8px 10px;
+    border-radius: 12px;
+  }
+  .dd-play {
+    min-width: 176px;
+    height: 46px;
+    font-size: 14px;
   }
 }
 </style>

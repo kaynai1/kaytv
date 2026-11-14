@@ -36,10 +36,12 @@ withDefaults(
   height: 56px;
   display: grid;
   place-items: center;
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.045);
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.055);
   color: var(--muted);
   margin-bottom: 4px;
+  backdrop-filter: blur(18px);
 }
 .state-title {
   margin: 0;

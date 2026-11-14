@@ -271,8 +271,8 @@ watch(selectedSource, () => {
   padding: 10px 13px;
   margin-bottom: 16px;
   border-radius: 6px;
-  border: 1px solid rgba(229, 9, 20, 0.18);
-  background: rgba(229, 9, 20, 0.06);
+  border: 1px solid rgba(248, 113, 113, 0.22);
+  background: rgba(248, 113, 113, 0.08);
   color: #e8c68f;
   font-size: 12px;
   line-height: 1.6;

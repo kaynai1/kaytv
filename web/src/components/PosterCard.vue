@@ -109,7 +109,7 @@ function onError() {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 7px;
   width: 100%;
   min-width: 0;
   padding: 0;
@@ -117,33 +117,31 @@ function onError() {
   background: transparent;
   text-align: left;
   color: var(--text);
-  border-radius: 4px;
+  border-radius: 12px;
   outline: none;
-  transition: transform 0.2s ease;
+  transition: transform 0.18s ease;
 }
 .poster-art {
   position: relative;
   width: 100%;
   aspect-ratio: 2 / 3;
-  border-radius: 4px;
+  border-radius: 11px;
   overflow: hidden;
-  background: var(--surface-2);
-  border: 0;
-  box-shadow: none;
+  background: #232b28;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28);
   transition:
-    box-shadow 0.2s ease,
-    border-radius 0.2s ease;
+    box-shadow 0.18s ease,
+    border-color 0.18s ease;
 }
 @media (hover: hover) {
   .poster-card:hover {
-    transform: scale(1.055);
+    transform: translateY(-3px);
     z-index: 20;
   }
   .poster-card:hover .poster-art {
-    border-radius: 5px;
-    box-shadow:
-      0 14px 34px rgba(0, 0, 0, 0.7),
-      0 0 0 1px rgba(255, 255, 255, 0.12);
+    border-color: rgba(255, 255, 255, 0.18);
+    box-shadow: 0 18px 40px rgba(0, 0, 0, 0.5);
   }
 }
 .poster-art img {
@@ -154,40 +152,48 @@ function onError() {
   height: 100%;
   object-fit: cover;
   display: block;
-  transition: transform 0.4s ease;
+  transition: transform 0.35s ease;
 }
 .poster-fallback {
   width: 100%;
   height: 100%;
   display: grid;
   place-items: center;
-  font-size: clamp(26px, 3.6vw, 40px);
-  font-weight: 600;
-  color: rgba(255, 255, 255, 0.35);
+  background:
+    radial-gradient(90% 70% at 70% 8%, rgba(52, 211, 153, 0.14), transparent 60%),
+    linear-gradient(165deg, #242d29 0%, #171d1b 58%, #101412 100%);
+  font-size: clamp(24px, 3vw, 32px);
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.32);
 }
 .poster-source,
 .poster-remarks {
   position: absolute;
   z-index: 2;
-  top: 6px;
-  font-size: 10px;
+  top: 7px;
+  font-size: 9.5px;
+  font-weight: 600;
   line-height: 1;
-  padding: 3px 5px;
-  border-radius: 3px;
-  background: rgba(0, 0, 0, 0.7);
-  color: rgba(255, 255, 255, 0.9);
+  padding: 4px 6px;
+  border-radius: 999px;
+  background: rgba(10, 14, 12, 0.62);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
   max-width: calc(100% - 16px);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .poster-source {
-  left: 6px;
+  left: 7px;
 }
 .poster-remarks {
-  right: 6px;
-  color: #fff;
-  background: rgba(229, 9, 20, 0.9);
+  right: 7px;
+  background: rgba(245, 245, 247, 0.94);
+  border-color: transparent;
+  color: #101013;
 }
 .poster-progress {
   position: absolute;
@@ -206,17 +212,17 @@ function onError() {
 .poster-meta {
   display: flex;
   flex-direction: column;
-  gap: 1px;
-  padding: 0 1px;
+  gap: 2px;
+  padding: 0 3px;
   min-width: 0;
 }
 .poster-title {
   min-width: 0;
   max-width: 100%;
-  font-size: 12.5px;
-  font-weight: 500;
+  font-size: 13px;
+  font-weight: 600;
   line-height: 1.35;
-  color: #d6d6d6;
+  color: #f0f0f2;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -241,9 +247,9 @@ function onError() {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(180deg, rgba(0, 0, 0, 0) 42%, rgba(0, 0, 0, 0.66));
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0) 42%, rgba(0, 0, 0, 0.6));
   opacity: 0;
-  transition: opacity 0.2s ease;
+  transition: opacity 0.18s ease;
 }
 .play-dot {
   width: 42px;
@@ -252,11 +258,11 @@ function onError() {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(255, 255, 255, 0.92);
+  background: rgba(255, 255, 255, 0.94);
   color: #000;
   box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
   transform: scale(0.86);
-  transition: transform 0.2s ease;
+  transition: transform 0.18s ease;
 }
 .poster-card:hover .poster-overlay {
   opacity: 1;
@@ -271,9 +277,10 @@ function onError() {
   outline: none;
 }
 .poster-card:focus .poster-art {
+  border-color: rgba(245, 245, 247, 0.9);
   box-shadow:
-    0 14px 34px rgba(0, 0, 0, 0.7),
-    0 0 0 3px var(--accent);
+    0 16px 36px rgba(0, 0, 0, 0.55),
+    0 0 0 2px rgba(245, 245, 247, 0.9);
 }
 .poster-card:focus .poster-overlay {
   opacity: 1;
@@ -282,6 +289,42 @@ function onError() {
   transform: scale(1);
 }
 .poster-card.compact .poster-title {
-  font-size: 12px;
+  font-size: 12.5px;
+}
+
+.tv-mode .poster-title {
+  font-size: 16px;
+}
+
+.tv-mode .poster-sub {
+  font-size: 13px;
+}
+
+.tv-mode .poster-art {
+  border-radius: 12px;
+}
+
+@media (max-width: 720px) {
+  .poster-art {
+    border-radius: 9px;
+  }
+  .poster-title {
+    font-size: 12px;
+  }
+  .poster-meta {
+    padding: 0 2px;
+  }
+  .poster-source,
+  .poster-remarks {
+    font-size: 9px;
+    padding: 3px 5px;
+    top: 5px;
+  }
+  .poster-source {
+    left: 5px;
+  }
+  .poster-remarks {
+    right: 5px;
+  }
 }
 </style>

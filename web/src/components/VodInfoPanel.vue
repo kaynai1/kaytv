@@ -277,9 +277,9 @@ watch(
 }
 
 .info-chip.source {
-  border-color: rgba(229, 9, 20, 0.4);
-  background: var(--accent-soft);
-  color: #ff9b9e;
+  border-color: rgba(255, 255, 255, 0.18);
+  background: var(--surface-2);
+  color: var(--text);
 }
 
 .info-synopsis,

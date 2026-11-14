@@ -1,22 +1,15 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { RouterLink, useRoute, useRouter } from 'vue-router'
+import { RouterLink, useRoute } from 'vue-router'
 import { contentTypeName } from '@kaytv/shared'
 import { api } from '../api/client'
 import { mediaUrl } from '../api/runtime'
-import {
-  tmdbArts,
-  tmdbBackdropUrl,
-  tmdbEnsure,
-  tmdbKey,
-  tmdbPosterUrl,
-  tmdbSwapImageHost
-} from '../api/tmdb'
+import { tmdbArts, tmdbEnsure, tmdbKey, tmdbPosterUrl, tmdbSwapImageHost } from '../api/tmdb'
 import { useSettingsStore } from '../stores/settings'
 import { useLibraryStore, itemKey } from '../stores/library'
 import { usePlayerStore } from '../stores/player'
 import { toast } from '../composables/useToast'
-import type { PosterItem, VodDetail, VodItem } from '../types'
+import type { PosterItem, VodItem } from '../types'
 import AppIcon from '../components/AppIcon.vue'
 import EmptyState from '../components/EmptyState.vue'
 import PosterCard from '../components/PosterCard.vue'
@@ -26,7 +19,6 @@ const settings = useSettingsStore()
 const library = useLibraryStore()
 const player = usePlayerStore()
 const route = useRoute()
-const router = useRouter()
 
 const content = ref('')
 const region = ref('all')
@@ -42,13 +34,6 @@ const mounted = ref(false)
 const sentinel = ref<HTMLElement | null>(null)
 const modalTarget = ref<{ sourceId: string; id: string } | null>(null)
 
-const heroIndex = ref(0)
-const heroInfo = ref<VodDetail | null>(null)
-const heroFading = ref(false)
-const detailCache = new Map<string, VodDetail>()
-let heroTimer = 0
-let secondaryTimer = 0
-
 const CONTENT_TABS = [
   { id: '', name: '推荐' },
   { id: 'movie', name: '电影' },
@@ -57,15 +42,7 @@ const CONTENT_TABS = [
   { id: 'variety', name: '综艺' },
   { id: 'anime', name: '动漫' },
   { id: 'documentary', name: '纪录片' },
-  { id: 'all', name: '全部影视' }
-]
-
-const SHELF_TYPES = [
-  { id: 'movie', name: '热门电影' },
-  { id: 'tv', name: '热门剧集' },
-  { id: 'short', name: '短剧精选' },
-  { id: 'variety', name: '综艺热播' },
-  { id: 'anime', name: '动漫新番' }
+  { id: 'all', name: '全部' }
 ]
 
 const REGIONS = [
@@ -78,22 +55,13 @@ const REGIONS = [
   { id: 'other', name: '其他' }
 ]
 
-const TYPE_NOTES: Record<string, { mark: string; text: string }> = {
-  movie: {
-    mark: '影',
-    text: '只显示识别为「电影」的条目：源站分类里带电影、影片、片名的都算，剧集和短剧不会混进来。'
-  },
-  tv: {
-    mark: '剧',
-    text: '只显示识别为「电视剧」的条目：短剧、综艺、动漫都单独归类，不会混进来。'
-  },
-  short: {
-    mark: '短',
-    text: '只显示识别为「短剧」的条目：源站标注短剧 / 爽文短剧 / 红果短剧的都算，竖屏短剧与电影、剧集完全分开。'
-  },
-  variety: { mark: '综', text: '只显示识别为「综艺」的条目。' },
-  anime: { mark: '漫', text: '只显示识别为「动漫」的条目。' },
-  documentary: { mark: '纪', text: '只显示识别为「纪录片」的条目。' }
+const TYPE_NOTES: Record<string, string> = {
+  movie: '只显示识别为「电影」的条目，剧集和短剧不会混进来。',
+  tv: '只显示识别为「电视剧」的条目，短剧、综艺、动漫单独归类。',
+  short: '只显示识别为「短剧」的条目，与电影、剧集完全分开。',
+  variety: '只显示识别为「综艺」的条目。',
+  anime: '只显示识别为「动漫」的条目。',
+  documentary: '只显示识别为「纪录片」的条目。'
 }
 
 const sourceRow = ref<HTMLElement | null>(null)
@@ -119,10 +87,21 @@ const contentName = computed(
 const isTypeView = computed(() =>
   ['movie', 'tv', 'short', 'variety', 'anime', 'documentary'].includes(content.value)
 )
-const typeNote = computed(() => (isTypeView.value ? TYPE_NOTES[content.value] : null))
+const typeNote = computed(() => (isTypeView.value ? TYPE_NOTES[content.value] : ''))
 const regionName = computed(
   () => REGIONS.find((item) => item.id === region.value)?.name || '全部地区'
 )
+
+const siteLabel = computed(() => {
+  if (settings.standalone) return '内置模式'
+  if (!settings.checked) return '连接中…'
+  if (!settings.online) return '未连接'
+  try {
+    return new URL(settings.displayServer).host
+  } catch {
+    return '已连接'
+  }
+})
 
 const description = computed(() => {
   if (!settings.checked) return '正在连接服务端…'
@@ -137,15 +116,6 @@ const description = computed(() => {
 
 const continueList = computed(() => library.recentHistory.slice(0, 14))
 
-interface Shelf {
-  id: string
-  name: string
-  items: VodItem[]
-}
-
-const shelves = ref<Shelf[]>([])
-const shelfLoading = ref(false)
-const shelfError = ref('')
 /** 全量片单里按类型归类的补充条目，用来覆盖被拆成多个分类的短剧题材 */
 const extraByType = ref<Record<string, VodItem[]>>({})
 
@@ -162,23 +132,6 @@ const visibleItems = computed(() => {
 function displayItem(item: VodItem): PosterItem {
   const label = contentTypeName(item.contentType || '')
   return label ? { ...item, typeName: label } : item
-}
-
-/** 同一行里限制单个片源的数量，避免一个源刷屏 */
-function balanceShelf(list: VodItem[]): VodItem[] {
-  const picked: VodItem[] = []
-  const rest: VodItem[] = []
-  const counts = new Map<string, number>()
-  for (const item of [...list].sort(byHot)) {
-    const used = counts.get(item.sourceId) || 0
-    if (used < 2) {
-      counts.set(item.sourceId, used + 1)
-      picked.push(item)
-    } else {
-      rest.push(item)
-    }
-  }
-  return [...picked, ...rest]
 }
 
 /** 拉一份全量片单，按识别到的类型分桶，用来补齐被拆成多个分类的短剧题材 */
@@ -200,70 +153,6 @@ async function loadExtra(): Promise<Record<string, VodItem[]>> {
   } catch {
     return {}
   }
-}
-
-let shelfToken = 0
-
-async function loadShelves() {
-  if (!settings.online || settings.needsLogin) return
-  const token = ++shelfToken
-  shelfLoading.value = true
-  shelfError.value = ''
-  /** 分类片单要一条一条冒出来，不能等 5 个分类的全部片源都跑完才第一次上屏 */
-  const pools = new Map<string, { items: VodItem[]; errors: { sourceId: string; message: string }[] }>()
-  let extras: Record<string, VodItem[]> = {}
-  const render = () => {
-    if (token !== shelfToken) return 0
-    const next: Shelf[] = []
-    for (const shelf of SHELF_TYPES) {
-      const pool = pools.get(shelf.id)
-      if (!pool) continue
-      const merged = [...pool.items, ...(extras[shelf.id] || [])]
-      const seen = new Set<string>()
-      const matched = merged.filter((item) => {
-        if (item.contentType !== shelf.id) return false
-        const key = `${item.sourceId}:${item.id}`
-        if (seen.has(key)) return false
-        seen.add(key)
-        return true
-      })
-      if (!matched.length) continue
-      next.push({ ...shelf, items: balanceShelf(matched).slice(0, 14) })
-    }
-    if (next.length || pools.size === SHELF_TYPES.length) shelves.value = next
-    return next.length
-  }
-
-  const extrasPromise = loadExtra()
-  await Promise.all(
-    SHELF_TYPES.map(async (shelf) => {
-      try {
-        const result = await api.feed(shelf.id, 'all', sourceId.value, 1)
-        pools.set(shelf.id, { items: result.items, errors: result.errors || [] })
-      } catch (error) {
-        pools.set(shelf.id, {
-          items: [],
-          errors: [{ sourceId: '', message: error instanceof Error ? error.message : '分类加载失败' }]
-        })
-      }
-      render()
-    })
-  )
-  extras = await extrasPromise
-  if (token !== shelfToken) return
-  const shown = render()
-
-  if (!shown) {
-    const reasons = [
-      ...new Set(
-        [...pools.values()].flatMap((pool) => pool.errors.map((entry) => entry.message)).filter(Boolean)
-      )
-    ]
-    shelfError.value = reasons.length
-      ? reasons.slice(0, 3).join('；')
-      : '没有识别到可分类的影视内容，刷新或更换片源再试。'
-  }
-  shelfLoading.value = false
 }
 
 function scoreOf(item: VodItem): number {
@@ -292,66 +181,65 @@ function heroRank(item: VodItem): number {
   return value
 }
 
-const heroItems = computed(() => {
+/** 精选位只取一部：优先有海报、有年份、非短剧的条目 */
+const featured = computed<VodItem | null>(() => {
   const pool = items.value
     .filter((item) => !!item.pic)
     .sort((a, b) => heroRank(b) - heroRank(a))
-  const counts = new Map<string, number>()
-  const out: VodItem[] = []
-  for (const item of pool) {
-    const used = counts.get(item.sourceId) || 0
-    if (used >= 2) continue
-    counts.set(item.sourceId, used + 1)
-    out.push(item)
-    if (out.length === 5) break
+  return pool[0] || ranked.value[0] || null
+})
+const featuredType = computed(
+  () => contentTypeName(featured.value?.contentType || '') || featured.value?.typeName || ''
+)
+const featuredMeta = computed(() =>
+  [featured.value?.year, featuredType.value, featured.value?.area].filter(Boolean).join(' · ')
+)
+const featuredKey = computed(() => tmdbKey(featured.value?.name || '', featured.value?.year || ''))
+const featuredFailed = ref(false)
+const featuredSrc = computed(() => {
+  if (!featuredFailed.value) {
+    const tmdb = tmdbPosterUrl(tmdbArts[featuredKey.value], 'w500')
+    if (tmdb) return tmdb
   }
-  return out
+  return mediaUrl(featured.value?.pic || '')
 })
-const heroItem = computed<VodItem | null>(() => {
-  const list = heroItems.value
-  if (!list.length) return null
-  return list[Math.min(heroIndex.value, list.length - 1)] || null
-})
-const heroPicFailed = ref(false)
-const heroBackdropFailed = ref(false)
-const heroPosterFailed = ref(false)
-const heroKey = computed(() => tmdbKey(heroItem.value?.name || '', heroItem.value?.year || ''))
-const heroBackdrop = computed(() =>
-  heroBackdropFailed.value ? '' : tmdbBackdropUrl(tmdbArts[heroKey.value], 'w1280')
-)
-const heroPoster = computed(() =>
-  heroPosterFailed.value ? '' : tmdbPosterUrl(tmdbArts[heroKey.value], 'w780')
-)
-const heroSrc = computed(
-  () => heroBackdrop.value || heroPoster.value || mediaUrl(heroItem.value?.pic || '')
-)
-const heroInitial = computed(() => (heroItem.value?.name || '').trim().slice(0, 2) || '影')
-const heroHue = computed(() => {
-  const name = heroItem.value?.name || ''
-  let value = 0
-  for (let index = 0; index < name.length; index += 1) {
-    value = (value * 31 + name.charCodeAt(index)) % 360
-  }
-  return value
-})
-const heroScore = computed(() => {
-  const raw = (heroInfo.value?.score || heroItem.value?.score || '').toString().trim()
-  const value = Number(raw)
-  return Number.isFinite(value) && value > 0 ? raw : ''
-})
-const heroType = computed(
-  () => contentTypeName(heroItem.value?.contentType || '') || heroItem.value?.typeName || ''
-)
-const heroDesc = computed(() => {
-  const text = (heroInfo.value?.content || '').replace(/\s+/g, ' ').trim()
-  if (!text || text === heroItem.value?.name?.trim()) return ''
-  return text
-})
-const heroFavorited = computed(() => {
-  const item = heroItem.value
+const featuredFavorited = computed(() => {
+  const item = featured.value
   if (!item) return false
   return library.isFavorite(item.sourceId, item.id)
 })
+
+function onFeaturedError() {
+  if (featuredFailed.value) return
+  const tmdb = tmdbPosterUrl(tmdbArts[featuredKey.value], 'w500')
+  if (tmdb && tmdbSwapImageHost(tmdb)) return
+  featuredFailed.value = true
+}
+
+let featuredToken = 0
+async function featuredPlay() {
+  const item = featured.value
+  if (!item) return
+  const token = ++featuredToken
+  try {
+    const detail = await api.detail(item.sourceId, item.id)
+    if (token !== featuredToken) return
+    if (detail && `${detail.sourceId}:${detail.id}` === `${item.sourceId}:${item.id}`) {
+      player.openVod(detail, 0, 0, 0)
+      return
+    }
+  } catch {
+    /* 详情加载失败时退回弹窗，让用户手动选线路 */
+  }
+  if (token === featuredToken) openDetail(item)
+}
+
+function featuredFavorite() {
+  const item = featured.value
+  if (!item) return
+  const added = library.toggleFavorite({ ...item })
+  toast.success(added ? '已加入清单' : '已移出清单')
+}
 
 let feedToken = 0
 
@@ -423,7 +311,7 @@ function reload() {
   items.value = []
   page.value = 0
   pageCount.value = 1
-  heroIndex.value = 0
+  featuredFailed.value = false
   return loadPage(1)
 }
 
@@ -494,118 +382,6 @@ function progressOf(source: string, id: string): number {
   return entry.position / entry.duration
 }
 
-function historyItem(entry: (typeof library.recentHistory)[number]): VodItem {
-  return {
-    sourceId: entry.sourceId,
-    sourceName: entry.sourceName,
-    id: entry.id,
-    name: entry.name,
-    pic: entry.pic,
-    remarks: entry.episodeName || '',
-    year: '',
-    typeName: entry.episodeName || '',
-    area: '',
-    score: '',
-    time: entry.updatedAt
-  }
-}
-
-async function heroPlay() {
-  const item = heroItem.value
-  if (!item) return
-  if (heroInfo.value) {
-    player.openVod(heroInfo.value, 0, 0, 0)
-    return
-  }
-  try {
-    const detail = await api.detail(item.sourceId, item.id)
-    if (detail && `${detail.sourceId}:${detail.id}` === `${item.sourceId}:${item.id}`) {
-      detailCache.set(`${item.sourceId}:${item.id}`, detail)
-      heroInfo.value = detail
-      player.openVod(detail, 0, 0, 0)
-      return
-    }
-  } catch {
-    /* 详情加载失败时退回弹窗，让用户手动选线路 */
-  }
-  openDetail(item)
-}
-
-function heroFavorite() {
-  const item = heroItem.value
-  if (!item) return
-  const added = library.toggleFavorite({ ...item })
-  toast.success(added ? '已加入清单' : '已移出清单')
-}
-
-function setHeroIndex(index: number) {
-  const list = heroItems.value
-  if (!list.length) return
-  heroFading.value = true
-  heroIndex.value = ((index % list.length) + list.length) % list.length
-  window.setTimeout(() => {
-    heroFading.value = false
-  }, 260)
-}
-
-let heroFailures = 0
-function onHeroPicError() {
-  if (tmdbSwapImageHost(heroSrc.value)) return
-  if (heroBackdrop.value) {
-    heroBackdropFailed.value = true
-    return
-  }
-  if (heroPoster.value) {
-    heroPosterFailed.value = true
-    return
-  }
-  heroPicFailed.value = true
-  heroFailures += 1
-  if (heroFailures > 3 || heroItems.value.length < 2) return
-  window.setTimeout(() => {
-    if (document.hidden || player.open || modalTarget.value) return
-    setHeroIndex(heroIndex.value + 1)
-  }, 1200)
-}
-
-async function loadHeroInfo() {
-  const item = heroItem.value
-  if (!item) {
-    heroInfo.value = null
-    return
-  }
-  const key = `${item.sourceId}:${item.id}`
-  const cached = detailCache.get(key)
-  if (cached) {
-    heroInfo.value = cached
-    return
-  }
-  heroInfo.value = null
-  try {
-    const detail = await api.detail(item.sourceId, item.id)
-    if (detail && `${detail.sourceId}:${detail.id}` === key) {
-      detailCache.set(key, detail)
-      heroInfo.value = detail
-    }
-  } catch {
-    /* 简介加载失败时保留海报与片名 */
-  }
-}
-
-function startHeroTimer() {
-  stopHeroTimer()
-  heroTimer = window.setInterval(() => {
-    if (document.hidden || player.open || modalTarget.value) return
-    if (heroItems.value.length < 2) return
-    setHeroIndex(heroIndex.value + 1)
-  }, 8000)
-}
-
-function stopHeroTimer() {
-  if (heroTimer) window.clearInterval(heroTimer)
-  heroTimer = 0
-}
-
 onMounted(async () => {
   await settings.init()
   mounted.value = true
@@ -618,13 +394,10 @@ onMounted(async () => {
   if (sentinel.value) observer.observe(sentinel.value)
   pickSource()
   if (!settings.needsLogin) reload()
-  // 首屏先让主片单抢带宽，分类索引和货架晚一点再补，三端冷启动不再同时打几十个请求
-  secondaryTimer = window.setTimeout(() => {
-    if (!mounted.value) return
-    void loadTaxonomy()
-    if (content.value === '') void loadShelves()
+  // 首屏先让主片单抢带宽，分类索引晚一点再补
+  window.setTimeout(() => {
+    if (mounted.value) void loadTaxonomy()
   }, 1500)
-  startHeroTimer()
   window.addEventListener('resize', updateScrollState)
   if (typeof ResizeObserver !== 'undefined' && sourceRow.value) {
     rowObserver = new ResizeObserver(() => updateScrollState())
@@ -634,18 +407,20 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
-  window.clearTimeout(secondaryTimer)
   observer?.disconnect()
   rowObserver?.disconnect()
   window.removeEventListener('resize', updateScrollState)
-  stopHeroTimer()
+})
+
+watch(featured, (item) => {
+  featuredFailed.value = false
+  if (item) tmdbEnsure(item.name, item.year, item.contentType || '')
 })
 
 watch([content, region, sourceId], () => {
   if (!mounted.value) return
   reload()
-  if (content.value === '') void loadShelves()
-  else if (isTypeView.value) void loadExtra()
+  if (isTypeView.value) void loadExtra()
 })
 
 watch(
@@ -654,7 +429,6 @@ watch(
     if (!mounted.value) return
     pickSource()
     reload()
-    if (content.value === '') void loadShelves()
     void nextTick(updateScrollState)
   }
 )
@@ -685,145 +459,125 @@ watch(
 )
 
 watch(
-  () => heroItem.value && `${heroItem.value.sourceId}:${heroItem.value.id}`,
-  () => {
-    heroPicFailed.value = false
-    heroBackdropFailed.value = false
-    heroPosterFailed.value = false
-    void loadHeroInfo()
-  },
-  { immediate: true }
-)
-
-watch(heroItems, (list) => {
-  heroFailures = 0
-  for (const item of list.slice(0, 6)) tmdbEnsure(item.name, item.year, item.contentType || '')
-  if (!list.length) return
-  if (heroIndex.value > list.length - 1) heroIndex.value = 0
-})
-
-watch(
   () => route.fullPath,
   () => {
-    if (route.name === 'movies') startHeroTimer()
-    else stopHeroTimer()
+    if (route.name === 'movies') updateScrollState()
   }
 )
 </script>
 
 <template>
   <div class="movies-wrap">
-    <section
-      v-if="heroItem"
-      class="hero"
-      :class="{ fading: heroFading }"
-      aria-label="本月主打"
-    >
-      <div class="hero-art">
-        <div
-          class="hero-fallback"
-          :style="{
-            background: `linear-gradient(135deg, hsl(${heroHue} 42% 24%), #0d0d11 72%)`
-          }"
-        >
-          <span>{{ heroInitial }}</span>
-        </div>
-        <img
-          v-if="!heroPicFailed && !heroBackdrop && heroItem.pic"
-          class="hero-ambient"
-          :src="mediaUrl(heroItem.pic)"
-          alt=""
-          aria-hidden="true"
-          referrerpolicy="no-referrer"
-        />
-        <img
-          v-if="!heroPicFailed"
-          :key="`${heroItem.sourceId}:${heroItem.id}:${heroBackdrop ? 'tmdb' : 'src'}`"
-          :class="{ 'is-poster': !heroBackdrop }"
-          :src="heroSrc"
-          :alt="heroItem.name"
-          loading="eager"
-          decoding="async"
-          referrerpolicy="no-referrer"
-          @error="onHeroPicError()"
-        />
-        <span class="fade-y" />
-        <span class="fade-x" />
+    <header class="mm-head">
+      <RouterLink class="mm-brand" to="/" data-nav>
+        <span class="mm-logo"><AppIcon name="play" :size="16" /></span>
+        <span class="mm-wordmark">{{ settings.siteName }}</span>
+      </RouterLink>
+      <RouterLink class="mm-site" to="/settings" data-nav :title="settings.displayServer">
+        <span class="mm-site-dot" :class="{ online: settings.online }" />
+        <span class="mm-site-name">{{ siteLabel }}</span>
+        <AppIcon name="down" :size="12" />
+      </RouterLink>
+      <div class="mm-head-actions">
+        <RouterLink class="mm-round" to="/hot" data-nav title="热门榜">
+          <AppIcon name="flame" :size="17" />
+        </RouterLink>
+        <RouterLink class="mm-round" to="/search" data-nav title="搜索">
+          <AppIcon name="search" :size="17" />
+        </RouterLink>
       </div>
-      <div class="hero-body">
-        <div class="hero-meta">
-          <span class="hero-brand">K</span>
-          <span v-if="heroType" class="hero-type">{{ heroType }}</span>
-          <span v-if="heroScore" class="hero-score">{{ heroScore }} 分</span>
-          <span v-if="heroItem.year">{{ heroItem.year }}</span>
-          <span v-if="heroItem.area">{{ heroItem.area }}</span>
-          <span class="hero-hd">HD</span>
-        </div>
-        <h1 class="hero-title">{{ heroItem.name }}</h1>
-        <p v-if="heroDesc" class="hero-desc">{{ heroDesc }}</p>
-        <div class="hero-cta">
-          <button class="btn play" data-nav type="button" @click="heroPlay">
-            <AppIcon name="play" :size="19" />
-            播放
-          </button>
-          <button class="btn info" data-nav type="button" @click="openDetail(heroItem)">
-            <AppIcon name="info" :size="18" />
-            更多信息
-          </button>
-          <button
-            class="btn round"
-            :class="{ favored: heroFavorited }"
-            data-nav
-            type="button"
-            :title="heroFavorited ? '从清单移除' : '加入清单'"
-            @click="heroFavorite"
-          >
-            <AppIcon name="bookmark" :size="17" />
-          </button>
-          <RouterLink class="btn round live-cta" to="/live" data-nav title="看电视直播">
-            <AppIcon name="live" :size="17" />
-          </RouterLink>
-        </div>
-        <div v-if="heroItems.length > 1" class="hero-dots">
-          <button
-            v-for="(item, index) in heroItems"
-            :key="`${item.sourceId}:${item.id}`"
-            class="hero-dot"
-            :class="{ on: index === heroIndex }"
-            type="button"
-            :aria-label="`切换到 ${item.name}`"
-            @click="setHeroIndex(index)"
-          />
-        </div>
-      </div>
-    </section>
+    </header>
 
-    <div class="movies-body">
-      <div class="page-head">
-        <div>
-          <h1 class="page-title"><span class="bar" />影视专区</h1>
-          <p class="page-desc">{{ description }}</p>
-        </div>
-        <div class="page-actions">
-          <RouterLink class="btn" to="/search" data-nav>
-            <AppIcon name="search" :size="16" />
-            聚合搜索
-          </RouterLink>
-          <RouterLink class="btn" to="/hot" data-nav>
-            <AppIcon name="flame" :size="16" />
-            热门榜
-          </RouterLink>
-        </div>
-      </div>
-
+    <div class="mm-body">
       <template v-if="settings.online && !settings.needsLogin">
-        <section class="section-block filter-block">
-          <div class="chip-row hide-scrollbar">
+        <section v-if="continueList.length" class="mm-continue">
+          <div class="mm-sec-head">
+            <h2>继续观看</h2>
+            <span>最近播放</span>
+          </div>
+          <div class="mm-continue-row hide-scrollbar">
+            <button
+              v-for="entry in continueList"
+              :key="itemKey(entry.sourceId, entry.id)"
+              class="mm-continue-card"
+              data-nav
+              type="button"
+              @click="openHistory(entry.sourceId, entry.id)"
+            >
+              <span class="mm-continue-art">
+                <img
+                  v-if="entry.pic"
+                  :src="mediaUrl(entry.pic)"
+                  alt=""
+                  loading="lazy"
+                  referrerpolicy="no-referrer"
+                />
+                <span v-else class="mm-continue-fallback">{{ entry.name.slice(0, 1) }}</span>
+                <span class="mm-continue-play"><AppIcon name="play" :size="13" /></span>
+                <span class="mm-continue-bar">
+                  <span :style="{ width: `${Math.min(100, progressOf(entry.sourceId, entry.id) * 100)}%` }" />
+                </span>
+              </span>
+              <span class="mm-continue-meta">
+                <strong>{{ entry.name }}</strong>
+                <span>{{ entry.episodeName || '继续上次进度' }}</span>
+              </span>
+            </button>
+          </div>
+        </section>
+
+        <section v-if="featured" class="mm-featured">
+          <img
+            v-if="featuredSrc && !featuredFailed"
+            class="mm-featured-glow"
+            :src="featuredSrc"
+            alt=""
+            aria-hidden="true"
+            referrerpolicy="no-referrer"
+          />
+          <div class="mm-featured-art">
+            <img
+              v-if="featuredSrc && !featuredFailed"
+              :key="featuredKey"
+              :src="featuredSrc"
+              :alt="featured.name"
+              loading="eager"
+              decoding="async"
+              referrerpolicy="no-referrer"
+              @error="onFeaturedError"
+            />
+            <span v-else class="mm-featured-fallback">{{ featured.name.slice(0, 1) }}</span>
+          </div>
+          <div class="mm-featured-info">
+            <span class="mm-kicker">本周精选</span>
+            <h2 class="mm-featured-title">{{ featured.name }}</h2>
+            <p v-if="featuredMeta" class="mm-featured-meta">{{ featuredMeta }}</p>
+            <div class="mm-featured-actions">
+              <button class="mm-play" data-nav type="button" @click="featuredPlay">
+                <AppIcon name="play" :size="14" />
+                立即观看
+              </button>
+              <button
+                class="mm-glass-btn"
+                :class="{ on: featuredFavorited }"
+                data-nav
+                type="button"
+                :title="featuredFavorited ? '从清单移除' : '加入清单'"
+                @click="featuredFavorite"
+              >
+                <AppIcon name="bookmark" :size="16" />
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <div class="mm-filter">
+          <div class="chip-row hide-scrollbar mm-tabs">
             <button
               v-for="tab in CONTENT_TABS"
               :key="tab.id"
-              class="chip"
-              :class="{ active: content === tab.id }"
+              class="mm-pill"
+              :class="{ on: content === tab.id }"
               data-nav
               type="button"
               @click="chooseContent(tab.id)"
@@ -831,7 +585,13 @@ watch(
               {{ tab.name }}
             </button>
           </div>
-          <div v-if="isTypeView" class="chip-row hide-scrollbar">
+
+          <div v-if="content === '' && !typeNote" class="mm-headline">
+            <h2>正在热映</h2>
+            <span>{{ description }}</span>
+          </div>
+
+          <div v-if="isTypeView" class="chip-row hide-scrollbar mm-regions">
             <button
               v-for="item in REGIONS"
               :key="item.id"
@@ -844,20 +604,14 @@ watch(
               {{ item.name }}
             </button>
           </div>
-          <div v-if="typeNote" class="short-note">
-            <span class="short-mark">{{ typeNote.mark }}</span>
-            {{ typeNote.text }}
-          </div>
+          <p v-if="typeNote" class="mm-note">{{ typeNote }}</p>
 
-          <div class="source-row">
-            <span class="source-label">
-              片源
-              <em v-if="content">{{ onlineSources.length }}</em>
-            </span>
+          <div class="mm-source-row">
+            <span class="mm-source-label">片源</span>
             <div class="chip-shell">
               <button
                 v-show="canScrollLeft"
-                class="chip-arrow left"
+                class="mm-arrow left"
                 type="button"
                 tabindex="-1"
                 aria-label="向左滚动片源"
@@ -867,7 +621,7 @@ watch(
               </button>
               <div
                 ref="sourceRow"
-                class="chip-row hide-scrollbar"
+                class="chip-row hide-scrollbar mm-source-chips"
                 @wheel="onSourceWheel"
                 @scroll.passive="updateScrollState"
               >
@@ -894,7 +648,7 @@ watch(
               </div>
               <button
                 v-show="canScrollRight"
-                class="chip-arrow right"
+                class="mm-arrow right"
                 type="button"
                 tabindex="-1"
                 aria-label="向右滚动片源"
@@ -904,85 +658,16 @@ watch(
               </button>
             </div>
           </div>
-        </section>
-      </template>
-
-      <section v-if="continueList.length" class="section-block">
-        <h2 class="section-title">
-          <span class="mark" />
-          继续观看
-          <span class="hint">按最近播放排序</span>
-        </h2>
-        <div class="row-scroll hide-scrollbar">
-          <PosterCard
-            v-for="entry in continueList"
-            :key="itemKey(entry.sourceId, entry.id)"
-            :item="historyItem(entry)"
-            :progress="progressOf(entry.sourceId, entry.id)"
-            compact
-            @select="openHistory(entry.sourceId, entry.id)"
-          />
         </div>
-      </section>
 
-      <template v-if="settings.online && !settings.needsLogin">
-        <template v-if="content === ''">
-          <section v-if="shelfLoading && !shelves.length" class="section-block">
-            <h2 class="section-title">
-              <span class="mark" />
-              正在按类型整理
-            </h2>
-            <div class="row-scroll hide-scrollbar">
-              <div v-for="index in 8" :key="index" class="skeleton poster-skeleton" />
-            </div>
-          </section>
-
-          <EmptyState
-            v-else-if="shelfError"
-            title="暂时没能整理出分类片单"
-            :message="shelfError"
-            icon="film"
-          >
-            <div class="state-actions">
-              <button class="btn" data-nav type="button" @click="loadShelves">重试</button>
-              <button v-if="sourceId" class="btn" data-nav type="button" @click="sourceId = ''">
-                改回全部片源
-              </button>
-            </div>
-          </EmptyState>
-
-          <section v-for="shelf in shelves" v-else :key="shelf.id" class="section-block">
-            <h2 class="section-title">
-              <span class="mark" />
-              {{ shelf.name }}
-              <span class="hint">{{ shelf.items.length }} 部</span>
-              <button class="section-more" data-nav type="button" @click="chooseContent(shelf.id)">
-                查看全部
-                <AppIcon name="right" :size="14" />
-              </button>
-            </h2>
-            <div class="row-scroll hide-scrollbar">
-              <PosterCard
-                v-for="item in shelf.items"
-                :key="`${item.sourceId}:${item.id}`"
-                :item="displayItem(item)"
-                :progress="progressOf(item.sourceId, item.id)"
-                compact
-                @select="openDetail"
-              />
-            </div>
-          </section>
-        </template>
-
-        <section v-else class="section-block">
-          <h2 class="section-title">
-            <span class="mark" />
-            {{ contentName }}
-            <span v-if="!error" class="hint">{{ visibleItems.length }} 部已加载</span>
-          </h2>
+        <section class="mm-feed">
+          <div v-if="content !== ''" class="mm-headline">
+            <h2>{{ contentName }}</h2>
+            <span v-if="!error">{{ visibleItems.length }} 部已加载</span>
+          </div>
 
           <div v-if="loading" class="poster-grid">
-            <div v-for="index in 22" :key="index" class="skeleton poster-skeleton" />
+            <div v-for="index in 18" :key="index" class="skeleton poster-skeleton" />
           </div>
 
           <EmptyState v-else-if="error" title="列表加载失败" :message="error" icon="warn">
@@ -1000,7 +685,7 @@ watch(
             :message="
               sourceId
                 ? `${source?.name || '所选片源'} 没有返回${contentName}内容，可以重试或改回全部片源。`
-                : '换一个分类、地区或片源试试。分类按源站标注逐条识别，识别不出的条目只会出现在「全部影视」里。'
+                : '换一个分类、地区或片源试试。分类按源站标注逐条识别，识别不出的条目只会出现在「全部」里。'
             "
             icon="film"
           >
@@ -1082,104 +767,519 @@ watch(
   max-width: 1880px;
   margin: 0 auto;
 }
-/* 空态里的操作按钮横向排布，避免两个宽度不同的按钮上下堆叠 */
-.state-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 10px;
-  margin-top: 6px;
-}
-.movies-body {
-  padding: 0 clamp(16px, 3.4vw, 56px) 96px;
-}
-.hero .hero-art img {
-  animation: hero-in 0.5s ease;
-}
-/* 无 TMDB 背景图时：竖海报不再裁切铺满，改为环境光糊底 + 海报靠右 */
-.hero .hero-ambient {
-  position: absolute;
-  inset: -48px;
-  width: calc(100% + 96px);
-  height: calc(100% + 96px);
-  object-fit: cover;
-  filter: blur(46px) brightness(0.4) saturate(1.12);
-}
-.hero .hero-art img.is-poster {
-  object-fit: contain;
-  object-position: 84% 62%;
-  filter: brightness(0.94) drop-shadow(0 20px 46px rgba(0, 0, 0, 0.6));
-}
-.hero.fading .hero-body {
-  opacity: 0.35;
-}
-.hero-body {
-  transition: opacity 0.24s ease;
-}
-@keyframes hero-in {
-  from {
-    opacity: 0.2;
-    transform: scale(1.04);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-.btn.round.favored {
-  border-color: #fff;
-  background: rgba(255, 255, 255, 0.9);
-  color: #000;
-}
-.filter-block {
-  margin-top: 10px;
-}
-.short-note {
+
+/* ---------- 首页头部：品牌 + 站点胶囊 + 搜索圆钮 ---------- */
+.mm-head {
+  position: sticky;
+  top: 0;
+  z-index: 30;
   display: flex;
   align-items: center;
   gap: 10px;
-  margin: 2px 0 12px;
-  padding: 11px 15px;
-  border-radius: 6px;
-  border: 1px solid var(--line);
-  background: var(--surface);
-  color: var(--muted);
-  font-size: 12.5px;
-  line-height: 1.6;
+  padding: 16px clamp(16px, 3vw, 48px) 12px;
+  background: linear-gradient(180deg, rgba(7, 11, 9, 0.94) 0%, rgba(7, 11, 9, 0.72) 62%, transparent 100%);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
 }
-.short-mark {
-  flex: 0 0 auto;
-  width: 30px;
-  height: 30px;
+
+.mm-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.mm-logo {
+  flex: none;
   display: grid;
   place-items: center;
-  border-radius: 4px;
-  background: var(--accent);
-  color: #fff;
-  font-weight: 800;
-  font-size: 14px;
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  color: #101013;
+  background: linear-gradient(160deg, #ffffff, #d3d8d6);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.32);
 }
-.source-row {
+
+.mm-wordmark {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mm-site {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  min-width: 0;
+  max-width: 168px;
+  padding: 0 11px;
+  border-radius: 999px;
+  border: 1px solid var(--glass-border);
+  background: rgba(255, 255, 255, 0.07);
+  color: #d4d4d8;
+  font-size: 12.5px;
+  font-weight: 600;
+  text-decoration: none;
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
+.mm-site-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mm-site-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--danger);
+}
+
+.mm-site-dot.online {
+  background: var(--live);
+  box-shadow: 0 0 8px rgba(52, 211, 153, 0.6);
+}
+
+.mm-head-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.mm-round {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid var(--glass-border);
+  background: rgba(255, 255, 255, 0.08);
+  color: #e5e7eb;
+  text-decoration: none;
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  transition:
+    background 0.16s ease,
+    color 0.16s ease;
+}
+
+.mm-round:hover {
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+}
+
+.mm-body {
+  padding: 4px clamp(16px, 3vw, 48px) 96px;
+}
+
+/* ---------- 继续观看 ---------- */
+.mm-sec-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 10px 0 12px;
+}
+
+.mm-sec-head h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.mm-sec-head span {
+  font-size: 11.5px;
+  color: var(--muted-2);
+}
+
+.mm-continue-row {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding: 2px 2px 8px;
+  margin: 0 -2px;
+}
+
+.mm-continue-card {
+  flex: 0 0 clamp(208px, 30vw, 252px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(38, 45, 42, 0.82), rgba(22, 27, 25, 0.86));
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  outline: none;
+  transition:
+    transform 0.18s ease,
+    border-color 0.18s ease;
+}
+
+.mm-continue-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.mm-continue-art {
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #232b28;
+}
+
+.mm-continue-art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.mm-continue-fallback {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  font-size: 26px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.mm-continue-play {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: rgba(8, 12, 10, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  color: #fff;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.mm-continue-bar {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 7px;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.28);
+  overflow: hidden;
+}
+
+.mm-continue-bar span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+.mm-continue-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 0 4px;
+}
+
+.mm-continue-meta strong {
+  font-size: 13.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mm-continue-meta span {
+  font-size: 11px;
+  color: var(--muted-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- 精选卡 ---------- */
+.mm-featured {
+  position: relative;
+  display: grid;
+  grid-template-columns: 104px minmax(0, 1fr);
+  gap: 16px;
+  align-items: center;
+  margin-top: 18px;
+  padding: 14px;
+  border-radius: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background:
+    radial-gradient(120% 140% at 100% 0%, rgba(52, 211, 153, 0.14), transparent 58%),
+    linear-gradient(120deg, rgba(23, 38, 32, 0.92), rgba(11, 18, 15, 0.94));
+  box-shadow:
+    0 22px 54px rgba(0, 0, 0, 0.42),
+    inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  overflow: hidden;
+}
+
+.mm-featured-glow {
+  position: absolute;
+  inset: 0 0 0 auto;
+  width: 56%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0.2;
+  filter: blur(6px) saturate(1.1);
+  -webkit-mask-image: linear-gradient(90deg, transparent 0%, #000 62%);
+  mask-image: linear-gradient(90deg, transparent 0%, #000 62%);
+  pointer-events: none;
+}
+
+.mm-featured-art,
+.mm-featured-info {
+  position: relative;
+  z-index: 1;
+}
+
+.mm-featured-art {
+  position: relative;
+  aspect-ratio: 2 / 3;
+  border-radius: 14px;
+  overflow: hidden;
+  background: #1e2623;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.42);
+}
+
+.mm-featured-art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.mm-featured-fallback {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  background:
+    radial-gradient(90% 70% at 70% 8%, rgba(52, 211, 153, 0.18), transparent 60%),
+    linear-gradient(165deg, #26312d 0%, #171d1b 60%, #101412 100%);
+  font-size: 34px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.mm-featured-info {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.mm-kicker {
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(52, 211, 153, 0.14);
+  border: 1px solid rgba(52, 211, 153, 0.28);
+  color: #6ee7b7;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.mm-featured-title {
+  margin: 0;
+  max-width: 100%;
+  font-size: clamp(19px, 2.4vw, 26px);
+  font-weight: 700;
+  letter-spacing: 0;
+  line-height: 1.16;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.mm-featured-meta {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.mm-featured-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.mm-play {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 999px;
+  background: #f5f5f7;
+  color: #101013;
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+  outline: none;
+  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.38);
+  transition: background 0.16s ease;
+}
+
+.mm-play:hover {
+  background: #ffffff;
+}
+
+.mm-glass-btn {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid var(--glass-border);
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text);
+  cursor: pointer;
+  outline: none;
+}
+
+.mm-glass-btn.on {
+  background: rgba(255, 255, 255, 0.92);
+  color: #101013;
+  border-color: transparent;
+}
+
+/* ---------- 分类 / 地区 / 片源 ---------- */
+.mm-filter {
+  margin-top: 20px;
+}
+
+.mm-tabs {
+  gap: 8px;
+  padding: 2px 2px 10px;
+}
+
+.mm-pill {
+  flex: 0 0 auto;
+  height: 34px;
+  padding: 0 15px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.06);
+  color: #c7c7cf;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  outline: none;
+  transition:
+    background 0.16s ease,
+    color 0.16s ease,
+    border-color 0.16s ease;
+}
+
+.mm-pill:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--text);
+}
+
+.mm-pill.on {
+  background: #f5f5f7;
+  border-color: transparent;
+  color: #101013;
+  font-weight: 700;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.32);
+}
+
+.mm-pill:focus-visible {
+  outline: 2px solid #f5f5f7;
+  outline-offset: 3px;
+}
+
+.mm-headline {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 8px 0 12px;
+}
+
+.mm-headline h2 {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.mm-headline span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--muted-2);
+}
+
+.mm-regions {
+  padding-bottom: 6px;
+}
+
+.mm-regions .chip {
+  height: 30px;
+  padding: 0 12px;
+  font-size: 12px;
+}
+
+.mm-note {
+  margin: 0 0 10px;
+  padding: 10px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.mm-source-row {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-top: 4px;
+  margin-top: 2px;
 }
-.source-label {
+
+.mm-source-label {
   flex: 0 0 auto;
-  display: flex;
-  align-items: baseline;
-  gap: 4px;
-  font-size: 12px;
+  font-size: 11.5px;
   color: var(--muted-2);
   letter-spacing: 0.08em;
 }
-.source-label em {
-  font-style: normal;
-  font-size: 11px;
-  letter-spacing: 0;
-  color: var(--accent);
-}
+
 .chip-shell {
   position: relative;
   flex: 1;
@@ -1187,17 +1287,23 @@ watch(
   display: flex;
   align-items: center;
 }
-.source-row .chip-row {
+
+.mm-source-chips {
   flex: 1;
   min-width: 0;
+  gap: 7px;
+  padding: 2px 2px 8px;
   overscroll-behavior-x: contain;
   -webkit-overflow-scrolling: touch;
 }
-.source-row .chip {
-  font-size: 12.5px;
-  padding: 6px 11px;
+
+.mm-source-chips .chip {
+  height: 30px;
+  padding: 0 12px;
+  font-size: 12px;
 }
-.chip-arrow {
+
+.mm-arrow {
   position: absolute;
   top: 50%;
   z-index: 2;
@@ -1209,88 +1315,161 @@ watch(
   transform: translateY(-50%);
   border-radius: 50%;
   border: 1px solid var(--line-strong);
-  background: rgba(14, 14, 18, 0.94);
+  background: rgba(14, 18, 16, 0.94);
   color: var(--text);
   cursor: pointer;
   box-shadow: 0 5px 14px rgba(0, 0, 0, 0.45);
 }
-.chip-arrow:hover {
-  background: var(--surface-2);
-  color: var(--accent);
-}
-.chip-arrow.left {
+
+.mm-arrow.left {
   left: -8px;
 }
-.chip-arrow.right {
+
+.mm-arrow.right {
   right: -8px;
 }
+
+/* ---------- 片单 ---------- */
+.mm-feed {
+  margin-top: 8px;
+}
+
+.state-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 6px;
+}
+
 .poster-skeleton {
   aspect-ratio: 2 / 3;
-  border-radius: 4px;
+  border-radius: 10px;
 }
+
 .load-more {
   display: flex;
   justify-content: center;
   padding: 30px 0 10px;
 }
+
 .end-note {
   font-size: 12.5px;
   color: var(--muted-2);
 }
+
 .spinner.small {
   width: 15px;
   height: 15px;
   border-width: 2px;
 }
+
+@media (min-width: 900px) {
+  .mm-featured {
+    grid-template-columns: 132px minmax(0, 1fr);
+    gap: 22px;
+    padding: 18px;
+    max-width: 760px;
+  }
+  .mm-featured-title {
+    font-size: 28px;
+  }
+  .mm-headline h2 {
+    font-size: 21px;
+  }
+}
+
+.tv-mode .mm-head {
+  padding-top: 26px;
+}
+
+.tv-mode .mm-wordmark {
+  font-size: 18px;
+}
+
+.tv-mode .mm-featured {
+  grid-template-columns: 168px minmax(0, 1fr);
+  max-width: 880px;
+  padding: 22px;
+}
+
+.tv-mode .mm-featured-title {
+  font-size: 34px;
+}
+
+.tv-mode .mm-pill {
+  height: 44px;
+  padding: 0 20px;
+  font-size: 15px;
+}
+
+.tv-mode .mm-continue-card {
+  flex-basis: 300px;
+}
+
+@media (max-width: 899px) {
+  .mm-body {
+    padding-bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom, 0px) + 18px);
+  }
+}
+
 @media (max-width: 720px) {
-  .movies-body {
-    padding: 4px 14px calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 26px);
-  }
-  .hero .hero-ambient {
-    display: none;
-  }
-  .hero .hero-art img.is-poster {
-    object-fit: cover;
-    object-position: center 30%;
-    filter: brightness(0.8) saturate(1.03);
-  }
-  .hero {
-    border-radius: 0;
-    border-left: 0;
-    border-right: 0;
-    border-top: 0;
-    height: 330px;
-  }
-  .hero-cta {
+  .mm-head {
     gap: 8px;
+    padding: 14px 16px 10px;
   }
-  .hero-cta .btn {
-    min-height: 38px;
+  .mm-wordmark {
+    font-size: 14px;
+    max-width: 96px;
+  }
+  .mm-site {
+    max-width: 124px;
+    height: 30px;
+    padding: 0 9px;
+    font-size: 11.5px;
+  }
+  .mm-head-actions {
+    gap: 6px;
+  }
+  .mm-round {
+    width: 32px;
+    height: 32px;
+  }
+  .mm-body {
+    padding: 0 14px calc(var(--tabbar-h) + env(safe-area-inset-bottom, 0px) + 16px);
+  }
+  .mm-featured {
+    grid-template-columns: 86px minmax(0, 1fr);
+    gap: 12px;
+    padding: 11px;
+    border-radius: 20px;
+    margin-top: 14px;
+  }
+  .mm-featured-glow {
+    display: none;
+  }
+  .mm-featured-title {
+    font-size: 18px;
+  }
+  .mm-play {
+    height: 34px;
+    padding: 0 13px;
     font-size: 12px;
-    padding: 0 12px;
   }
-  .hero-cta .btn.round {
-    width: 38px;
-    min-height: 38px;
-    padding: 0;
+  .mm-glass-btn {
+    width: 34px;
+    height: 34px;
   }
-  .live-cta {
-    display: none;
+  .mm-continue-card {
+    flex-basis: 208px;
   }
-  .source-row {
-    align-items: center;
+  .mm-headline h2 {
+    font-size: 17px;
   }
-  .source-label {
-    width: 30px;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 1px;
-  }
-  .source-label em {
-    font-size: 10px;
-  }
-  .chip-arrow {
-    display: none;
+  .mm-pill {
+    height: 33px;
+    padding: 0 14px;
+    font-size: 12.5px;
   }
 }
 </style>

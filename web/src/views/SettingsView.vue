@@ -1153,8 +1153,8 @@ onMounted(async () => {
     background 0.18s ease;
 }
 .mode-card.active {
-  border-color: rgba(229, 9, 20, 0.55);
-  background: rgba(229, 9, 20, 0.12);
+  border-color: rgba(255, 255, 255, 0.42);
+  background: rgba(255, 255, 255, 0.08);
 }
 .mode-card:disabled {
   opacity: 0.6;
@@ -1397,12 +1397,12 @@ a.btn {
     background 0.18s ease;
 }
 .switch.on {
-  background: rgba(229, 9, 20, 0.22);
-  border-color: rgba(229, 9, 20, 0.45);
+  background: rgba(10, 132, 255, 0.32);
+  border-color: rgba(10, 132, 255, 0.6);
 }
 .switch.on .knob {
   transform: translateX(19px);
-  background: var(--accent);
+  background: #f5f5f7;
 }
 .switch:focus {
   box-shadow: 0 0 0 3px var(--accent);
@@ -1428,8 +1428,8 @@ a.btn {
   margin: 12px 0 0;
   padding: 9px 12px;
   border-radius: 6px;
-  background: rgba(229, 9, 20, 0.1);
-  border: 1px solid rgba(229, 9, 20, 0.3);
+  background: rgba(248, 113, 113, 0.1);
+  border: 1px solid rgba(248, 113, 113, 0.3);
   font-size: 12px;
   line-height: 1.6;
   color: var(--text);

@@ -415,11 +415,11 @@ watch(
 .detail-art {
   position: relative;
   aspect-ratio: 2 / 3;
-  border-radius: 4px;
+  border-radius: 16px;
   overflow: hidden;
-  border: 0;
-  background: var(--surface-2);
-  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #1e2623;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.55);
 }
 .detail-art img {
   position: absolute;
@@ -450,23 +450,23 @@ watch(
   flex-wrap: wrap;
 }
 .detail-tags .badge {
-  padding: 1px 8px;
-  border-radius: 2px;
-  border: 1px solid rgba(255, 255, 255, 0.24);
-  background: transparent;
-  color: #d2d2d2;
-  font-size: 10.5px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--glass-border);
+  background: rgba(255, 255, 255, 0.07);
+  color: #d4d4d8;
+  font-size: 11px;
   font-weight: 600;
 }
 .detail-tags .badge.accent {
-  border-color: rgba(229, 9, 20, 0.6);
-  background: transparent;
-  color: #ff5a63;
+  border-color: transparent;
+  background: rgba(255, 255, 255, 0.9);
+  color: #101013;
 }
 .detail-name {
   margin: 12px 0 10px;
   font-size: clamp(24px, 2.6vw, 36px);
-  font-weight: 800;
+  font-weight: 700;
   line-height: 1.15;
   letter-spacing: 0;
 }
@@ -590,9 +590,9 @@ watch(
 .ep-chip {
   min-height: 40px;
   padding: 8px 10px;
-  border-radius: 4px;
-  border: 1px solid transparent;
-  background: rgba(255, 255, 255, 0.09);
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: rgba(255, 255, 255, 0.07);
   color: #d8d8d8;
   font-size: 12.5px;
   font-weight: 500;
@@ -619,8 +619,8 @@ watch(
   color: #000;
 }
 .ep-chip.watched {
-  border-color: rgba(229, 9, 20, 0.55);
-  color: #ff8089;
+  border-color: rgba(10, 132, 255, 0.55);
+  color: var(--accent);
   background: var(--accent-soft);
 }
 .episodes-empty {
@@ -629,9 +629,9 @@ watch(
   gap: 10px;
   margin: 18px clamp(20px, 2.6vw, 36px) 0;
   padding: 14px 16px;
-  border-radius: 6px;
-  border: 1px solid rgba(229, 9, 20, 0.28);
-  background: rgba(229, 9, 20, 0.07);
+  border-radius: 14px;
+  border: 1px solid rgba(10, 132, 255, 0.28);
+  background: rgba(10, 132, 255, 0.07);
   color: var(--muted);
   font-size: 12.5px;
   line-height: 1.6;
