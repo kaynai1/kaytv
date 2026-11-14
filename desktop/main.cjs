@@ -45,14 +45,32 @@ function createWindow() {
   })
 }
 
+// GitHub 直连在国内经常超时，失败后自动换公共加速线路
+const UPDATE_MIRRORS = ['https://gh-proxy.com/', 'https://ghproxy.net/']
+let downloadSeq = 0
+
 function isAllowedUpdateUrl(raw) {
   try {
     const url = new URL(raw)
     if (url.protocol !== 'https:') return false
-    return url.hostname === 'github.com' || /\.githubusercontent\.com$/i.test(url.hostname)
+    const host = url.hostname.toLowerCase()
+    return (
+      host === 'github.com' ||
+      host.endsWith('.githubusercontent.com') ||
+      host === 'gh-proxy.com' ||
+      host === 'ghproxy.net'
+    )
   } catch {
     return false
   }
+}
+
+function updateCandidates(raw) {
+  const list = [raw]
+  if (/^https:\/\/github\.com\//i.test(raw)) {
+    for (const prefix of UPDATE_MIRRORS) list.push(prefix + raw)
+  }
+  return list.filter(isAllowedUpdateUrl)
 }
 
 function safeFileName(raw) {
@@ -62,6 +80,94 @@ function safeFileName(raw) {
 
 function sendProgress(sender, data) {
   if (!sender.isDestroyed()) sender.send('updater:progress', data)
+}
+
+function downloadFrom(url, filePath, sender, hint, seq) {
+  return new Promise((resolve, reject) => {
+    let received = 0
+    let total = hint
+    let lastBytes = 0
+    let lastAt = Date.now()
+    let speed = 0
+    let settled = false
+    let idleTimer = 0
+
+    const out = fs.createWriteStream(filePath)
+    const task = net.request({ method: 'GET', url, redirect: 'follow' })
+    updateTask = task
+
+    const fail = (error) => {
+      if (settled) return
+      settled = true
+      clearTimeout(idleTimer)
+      updateTask = null
+      try {
+        task.abort()
+      } catch {
+        /* ignore */
+      }
+      out.destroy()
+      try {
+        fs.rmSync(filePath, { force: true })
+      } catch {
+        /* ignore */
+      }
+      reject(error instanceof Error ? error : new Error(String(error)))
+    }
+
+    // 连接阶段 6 秒没响应就换下一条线路；传输中 30 秒没有新数据同样放弃
+    const armIdle = (ms) => {
+      clearTimeout(idleTimer)
+      idleTimer = setTimeout(() => fail(new Error('连接超时')), ms)
+    }
+    armIdle(6000)
+
+    task.on('response', (response) => {
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        fail(new Error(`镜像返回 HTTP ${response.statusCode}`))
+        return
+      }
+      if (!total) total = Number(response.headers['content-length']) || 0
+      armIdle(30000)
+      response.on('data', (chunk) => {
+        received += chunk.length
+        out.write(chunk)
+        armIdle(30000)
+        const now = Date.now()
+        const span = (now - lastAt) / 1000
+        if (span >= 0.4) {
+          speed = Math.max(0, (received - lastBytes) / span)
+          lastBytes = received
+          lastAt = now
+          sendProgress(sender, { received, total, speed })
+        }
+      })
+      response.on('end', () => {
+        out.end(() => {
+          if (settled) return
+          settled = true
+          clearTimeout(idleTimer)
+          updateTask = null
+          if (seq !== downloadSeq) {
+            try {
+              fs.rmSync(filePath, { force: true })
+            } catch {
+              /* ignore */
+            }
+            reject(new Error('下载已被新的任务替代'))
+            return
+          }
+          updateFilePath = filePath
+          sendProgress(sender, { received, total: total || received, speed: 0 })
+          resolve(received)
+        })
+      })
+      response.on('error', fail)
+    })
+    out.on('error', fail)
+    task.on('error', fail)
+    task.end()
+  })
 }
 
 ipcMain.handle('updater:download', (event, payload) => {
@@ -88,70 +194,23 @@ ipcMain.handle('updater:download', (event, payload) => {
 
   const sender = event.sender
   const hint = Number(payload?.total) || 0
-  return new Promise((resolve, reject) => {
-    let received = 0
-    let total = hint
-    let lastBytes = 0
-    let lastAt = Date.now()
-    let speed = 0
-    let settled = false
+  const candidates = updateCandidates(url)
+  const seq = ++downloadSeq
 
-    const out = fs.createWriteStream(filePath)
-    const task = net.request({ method: 'GET', url, redirect: 'follow' })
-    updateTask = task
-
-    const fail = (error) => {
-      if (settled) return
-      settled = true
-      updateTask = null
-      try {
-        task.abort()
-      } catch {
-        /* ignore */
-      }
-      out.destroy()
-      try {
-        fs.rmSync(filePath, { force: true })
-      } catch {
-        /* ignore */
-      }
-      reject(error instanceof Error ? error : new Error(String(error)))
-    }
-
-    task.on('response', (response) => {
-      if (response.statusCode < 200 || response.statusCode >= 300) {
-        fail(new Error(`GitHub 返回 HTTP ${response.statusCode}`))
-        return
-      }
-      if (!total) total = Number(response.headers['content-length']) || 0
-      response.on('data', (chunk) => {
-        received += chunk.length
-        out.write(chunk)
-        const now = Date.now()
-        const span = (now - lastAt) / 1000
-        if (span >= 0.4) {
-          speed = Math.max(0, (received - lastBytes) / span)
-          lastBytes = received
-          lastAt = now
-          sendProgress(sender, { received, total, speed })
+  const attempt = (index) =>
+    downloadFrom(candidates[index], filePath, sender, hint, seq).then(
+      (size) => ({ filePath, size }),
+      (error) => {
+        if (seq !== downloadSeq) throw error
+        if (index + 1 < candidates.length) {
+          sendProgress(sender, { received: 0, total: hint, speed: 0, reset: true })
+          return attempt(index + 1)
         }
-      })
-      response.on('end', () => {
-        out.end(() => {
-          if (settled) return
-          settled = true
-          updateTask = null
-          updateFilePath = filePath
-          sendProgress(sender, { received, total: total || received, speed: 0 })
-          resolve({ filePath, size: received })
-        })
-      })
-      response.on('error', fail)
-    })
-    out.on('error', fail)
-    task.on('error', fail)
-    task.end()
-  })
+        const detail = error?.message ? `（${error.message}）` : ''
+        throw new Error(`下载失败，GitHub 和加速线路都连不上${detail}，请检查网络后重试`)
+      }
+    )
+  return attempt(0)
 })
 
 ipcMain.handle('updater:install', () => {

@@ -6,7 +6,7 @@ export type UpdatePhase = 'idle' | 'downloading' | 'ready' | 'installing' | 'err
 interface DesktopUpdaterBridge {
   download(payload: { url: string; fileName: string; total?: number }): Promise<{ filePath: string; size: number }>
   install(): Promise<boolean>
-  onProgress(callback: (data: { received: number; total: number; speed: number }) => void): () => void
+  onProgress(callback: (data: { received: number; total: number; speed: number; reset?: boolean }) => void): () => void
 }
 
 interface AndroidUpdaterBridge {
@@ -57,12 +57,24 @@ let pollTimer = 0
 function subscribeDesktop(bridge: DesktopUpdaterBridge) {
   if (subscribed) return
   subscribed = true
-  bridge.onProgress(({ received, total, speed }) => {
+  bridge.onProgress(({ received, total, speed, reset }) => {
     if (updateDownload.phase !== 'downloading') return
+    if (reset) {
+      updateDownload.received = 0
+      updateDownload.total = total > 0 ? total : updateDownload.total
+    }
     if (received > updateDownload.received) updateDownload.received = received
     if (total > 0) updateDownload.total = total
     updateDownload.speed = speed
   })
+}
+
+// IPC 错误会带上 "Error invoking remote method '...'" 前缀，界面里只留真正的原因
+function cleanMessage(raw: string): string {
+  return String(raw || '')
+    .replace(/^Error invoking remote method '[^']+':\s*/i, '')
+    .replace(/^Error:\s*/i, '')
+    .trim()
 }
 
 function failDownload(message: string) {
@@ -70,10 +82,10 @@ function failDownload(message: string) {
   pollTimer = 0
   updateDownload.speed = 0
   updateDownload.phase = 'error'
-  updateDownload.error = message || '下载失败'
+  updateDownload.error = cleanMessage(message) || '下载失败'
 }
 
-function pollAndroid() {
+function pollAndroid(onFailure: (reason: string) => boolean) {
   window.clearInterval(pollTimer)
   let lastBytes = 0
   let lastAt = Date.now()
@@ -107,11 +119,62 @@ function pollAndroid() {
       if (!updateDownload.total) updateDownload.total = received
       updateDownload.phase = 'ready'
     } else if (progress.status === 'failed') {
-      failDownload(progress.error || '系统下载器报告下载失败')
+      window.clearInterval(pollTimer)
+      pollTimer = 0
+      const reason = progress.error || '系统下载器报告下载失败'
+      if (!onFailure(reason)) failDownload(`下载失败，GitHub 和加速线路都连不上（${cleanMessage(reason)}）`)
     } else if (progress.status === 'idle') {
       failDownload('下载任务丢失，请重新下载')
     }
   }, 600)
+}
+
+// 安卓系统下载器自己处理重定向，但直连 GitHub 超时后不会换线路，这里由页面重试
+const ANDROID_MIRRORS = ['https://gh-proxy.com/', 'https://ghproxy.net/']
+
+function androidSources(url: string): string[] {
+  const list = [url]
+  if (/^https:\/\/github\.com\//i.test(url)) {
+    for (const prefix of ANDROID_MIRRORS) list.push(prefix + url)
+  }
+  return list
+}
+
+function startAndroidDownload(url: string, fileName: string, totalHint: number): void {
+  const bridge = android()
+  if (!bridge?.downloadUpdate) {
+    openExternal(url)
+    return
+  }
+  const sources = androidSources(url)
+  let sourceIndex = 0
+
+  const handleFailure = (reason: string): boolean => {
+    if (sourceIndex + 1 >= sources.length) return false
+    sourceIndex += 1
+    updateDownload.received = 0
+    updateDownload.total = Math.max(0, totalHint)
+    updateDownload.speed = 0
+    return beginSource()
+  }
+
+  const beginSource = (): boolean => {
+    try {
+      const parsed = JSON.parse(bridge.downloadUpdate!(sources[sourceIndex], fileName)) as AndroidProgress
+      if (parsed.status === 'failed' || parsed.error) {
+        return handleFailure(parsed.error || '下载启动失败')
+      }
+      updateDownload.phase = 'downloading'
+      pollAndroid(handleFailure)
+      return true
+    } catch (error) {
+      return handleFailure(String((error as Error).message || error))
+    }
+  }
+
+  if (!beginSource()) {
+    failDownload('下载启动失败，请检查网络后重试')
+  }
 }
 
 export async function startUpdateDownload(url: string, fileName: string, totalHint = 0): Promise<void> {
@@ -140,17 +203,7 @@ export async function startUpdateDownload(url: string, fileName: string, totalHi
 
   const androidBridge = android()
   if (androidBridge?.downloadUpdate) {
-    updateDownload.phase = 'downloading'
-    try {
-      const parsed = JSON.parse(androidBridge.downloadUpdate(url, fileName)) as AndroidProgress
-      if (parsed.status === 'failed' || parsed.error) {
-        failDownload(parsed.error || '下载启动失败')
-        return
-      }
-      pollAndroid()
-    } catch (error) {
-      failDownload(String((error as Error).message || error))
-    }
+    startAndroidDownload(url, fileName, totalHint)
     return
   }
 
