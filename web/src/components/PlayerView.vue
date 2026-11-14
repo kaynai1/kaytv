@@ -161,6 +161,9 @@ const sheetMode = computed(
 /** 手势只给手机/平板，TV 大屏模式和电脑端继续用进度条与方向键 */
 const phoneGestures = computed(() => runtime.native && !settings.tvMode)
 
+/** 电脑端（Electron / 浏览器）：方向键固定为音量与快进快退，不参与遥控器焦点导航 */
+const desktopKeys = !runtime.native
+
 /** 暂停后只留中间的播放键，播放时它跟着控件一起淡出 */
 const centerPlayVisible = computed(
   () =>
@@ -1710,6 +1713,13 @@ function onKeydown(event: KeyboardEvent) {
       }
       return
     }
+    // 电脑端：上下键固定调音量（遥控器焦点导航只留给原生 TV 端）
+    if (desktopKeys && !drawerOpen.value) {
+      event.preventDefault()
+      event.stopPropagation()
+      stepVolume(event.key === 'ArrowDown' ? -0.05 : 0.05)
+      return
+    }
     // 焦点已经在控制条/菜单上时交给空间导航，遥控器才能在按钮之间走
     if (!drawerOpen.value && controlsFocused()) return
     event.preventDefault()
@@ -1734,6 +1744,13 @@ function onKeydown(event: KeyboardEvent) {
       event.stopPropagation()
       if (isLive.value) switchChannel(delta)
       else drawerFocus(delta)
+      return
+    }
+    // 电脑端：左右键固定快退/快进 15 秒，不受控制条焦点影响
+    if (desktopKeys) {
+      event.preventDefault()
+      event.stopPropagation()
+      seekBy(delta * 15)
       return
     }
     if (controlsFocused()) return
@@ -2379,7 +2396,14 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <p v-if="!runtime.native || settings.tvMode" class="player-hint">
+        <p v-if="!runtime.native" class="player-hint">
+          <span>← → {{ isLive ? '切换频道' : '快退/快进 15 秒' }}</span>
+          <span>↑ ↓ 音量</span>
+          <span>空格 播放/暂停</span>
+          <span>F 全屏</span>
+          <span>Esc 退出</span>
+        </p>
+        <p v-else-if="settings.tvMode" class="player-hint">
           <span>← → {{ isLive ? '切换频道' : '快退/快进 15 秒' }}</span>
           <span>↓ 播放/音量按钮</span>
           <span>↑ {{ isLive ? '频道列表' : '选集列表' }}</span>

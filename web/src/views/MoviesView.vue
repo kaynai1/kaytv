@@ -488,6 +488,7 @@ watch(
     <div class="mm-body">
       <template v-if="settings.online && !settings.needsLogin">
         <div class="mm-tvhead">
+          <span class="mm-tvlogo"><AppIcon name="play" :size="18" /></span>
           <h1>发现</h1>
           <button class="mm-site" type="button" data-nav @click="filterOpen = true">
             <span class="mm-site-dot" :class="{ online: settings.online }" />
@@ -1941,6 +1942,18 @@ watch(
   font-size: 22px;
   font-weight: 700;
   letter-spacing: 0;
+}
+
+.tv-mode .mm-tvlogo {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 11px;
+  color: #101013;
+  background: linear-gradient(160deg, #ffffff, #d3d8d6);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.32);
 }
 
 .tv-mode .mm-tvhead .mm-site {
