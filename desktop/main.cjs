@@ -161,9 +161,12 @@ ipcMain.handle('updater:install', () => {
   if (!inside || !/\.exe$/i.test(target) || !fs.existsSync(target)) {
     throw new Error('安装包还没下载完成')
   }
-  const child = spawn(target, [], { detached: true, stdio: 'ignore' })
+  // 先退出应用、延迟 2 秒再拉起安装器，否则 NSIS 会弹“KayTV 正在运行”的确认框
+  // 这里用 ping 而不是 timeout：timeout 在无控制台句柄时会立即报错，延时失效
+  const command = `ping -n 3 127.0.0.1 >nul & start "" "${target}"`
+  const child = spawn('cmd.exe', ['/c', command], { detached: true, stdio: 'ignore', windowsHide: true })
   child.unref()
-  setTimeout(() => app.quit(), 500)
+  setTimeout(() => app.quit(), 150)
   return true
 })
 
