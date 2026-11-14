@@ -276,8 +276,8 @@ function applyGroup() {
     group.value === ALL_GROUP ||
     (group.value === FOUR_K_GROUP && fourKChannels.value.length > 0) ||
     data.value.groups.some((item) => item.name === group.value)
-  if (group.value && !known) group.value = data.value.groups[0]?.name || ALL_GROUP
-  if (!group.value) group.value = data.value.groups[0]?.name || ALL_GROUP
+  if (group.value && !known) group.value = ALL_GROUP
+  if (!group.value) group.value = ALL_GROUP
 }
 
 async function load(fresh = false) {
@@ -764,24 +764,36 @@ watch(
 
 <template>
   <div class="page">
-    <div class="page-head">
-      <div>
-        <h1 class="page-title"><span class="bar live" />直播频道</h1>
-        <p class="page-desc">{{ statusText }}</p>
-      </div>
-      <div class="page-actions">
+    <div class="page-head live-head">
+      <h1 class="page-title">电视直播</h1>
+      <div class="page-actions live-actions">
+        <div class="search-field channel-search live-search">
+          <AppIcon class="search-icon" name="search" :size="16" />
+          <input
+            v-model="query"
+            class="input"
+            type="search"
+            placeholder="搜索频道"
+            autocomplete="off"
+          />
+        </div>
         <button
-          class="btn"
+          class="btn live-action-btn"
           data-nav
           :disabled="loading || !selectedSource || !visibleChannels.length"
           @click="detectGroup"
         >
-          <AppIcon name="search" :size="17" />
+          <AppIcon name="search" :size="16" />
           {{ detectLabel }}
         </button>
-        <button class="btn" data-nav :disabled="loading || !selectedSource" @click="load(true)">
-          <AppIcon name="refresh" :size="17" />
-          刷新频道
+        <button
+          class="btn live-action-btn"
+          data-nav
+          :disabled="loading || !selectedSource"
+          @click="load(true)"
+        >
+          <AppIcon name="refresh" :size="16" />
+          刷新
         </button>
       </div>
     </div>
@@ -791,7 +803,7 @@ watch(
         <button
           v-for="source in settings.activeLive"
           :key="source.id"
-          class="chip"
+          class="chip source-chip"
           :class="{ active: selectedSource === source.id }"
           data-nav
           type="button"
@@ -799,20 +811,6 @@ watch(
         >
           {{ source.name }}
         </button>
-      </div>
-
-      <div class="live-tools">
-        <div class="search-field channel-search">
-          <AppIcon class="search-icon" name="search" :size="18" />
-          <input
-            v-model="query"
-            class="input"
-            type="search"
-            placeholder="搜索频道名或分组"
-            autocomplete="off"
-          />
-        </div>
-        <span v-if="query" class="search-hint">正在全部频道中筛选</span>
       </div>
 
       <div class="group-bar">
@@ -827,7 +825,7 @@ watch(
             @click="group = item.name"
           >
             {{ item.name }}
-            <span class="count">{{ item.count }} 个频道</span>
+            <span class="count">{{ item.count }}</span>
           </button>
         </div>
         <p v-if="groupNote" class="group-note">{{ groupNote }}</p>
@@ -1346,5 +1344,210 @@ watch(
 }
 .stage-tag {
   letter-spacing: 1px;
+}
+
+/* ================= MarcoMovie phone live ================= */
+.live-head {
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.live-head .page-title {
+  font-size: 22px;
+  font-weight: 800;
+  color: #f5f5f7;
+}
+
+.live-actions {
+  margin-left: auto;
+  gap: 8px;
+  flex-wrap: nowrap;
+}
+
+.live-search {
+  width: 168px;
+}
+
+.live-search .input {
+  height: 38px;
+  padding-left: 38px;
+  padding-right: 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 12.5px;
+}
+
+.live-search .search-icon {
+  left: 13px;
+  color: #8e959e;
+}
+
+.live-action-btn {
+  height: 36px;
+  font-size: 12.5px;
+}
+
+.source-row {
+  margin: 4px 0 2px;
+}
+
+.source-row .source-chip {
+  height: 31px;
+  padding: 0 13px;
+  font-size: 12.5px;
+}
+
+.source-row .source-chip.active {
+  background: var(--accent);
+  border-color: transparent;
+  color: #fff;
+  font-weight: 700;
+}
+
+.group-bar {
+  margin-top: 10px;
+}
+
+.group-bar .chip {
+  height: 31px;
+  padding: 0 13px;
+  font-size: 12.5px;
+  gap: 6px;
+}
+
+.group-bar .chip.active-live {
+  background: #f5f5f7;
+  border-color: transparent;
+  color: #101013;
+  font-weight: 700;
+}
+
+.group-bar .chip.active-live .count {
+  color: rgba(16, 16, 19, 0.55);
+}
+
+.group-bar .chip .count {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: #8e959e;
+}
+
+.channel-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.channel-cell {
+  position: relative;
+  min-width: 0;
+}
+
+.cell-fav {
+  top: 6px;
+  right: 6px;
+}
+
+.cell-fav svg {
+  width: 12px;
+  height: 12px;
+}
+
+.channel-more {
+  grid-column: 1 / -1;
+}
+
+@media (min-width: 720px) {
+  .page .channel-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1000px) {
+  .page .channel-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+  }
+}
+
+@media (max-width: 899px) {
+  .live-head {
+    flex-direction: row;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .group-bar {
+    position: static;
+    background: none;
+    padding-top: 0;
+    margin-top: 8px;
+  }
+
+  .live-actions {
+    margin-left: auto;
+  }
+
+  /* 手机上不需要大播放台和节目单，点频道直接看 */
+  .live-layout {
+    display: block;
+  }
+
+  .live-stage,
+  .epg-panel {
+    display: none;
+  }
+
+  .page .channel-grid {
+    margin-top: 2px;
+  }
+}
+
+@media (max-width: 720px) {
+  .live-head {
+    flex-wrap: nowrap;
+  }
+
+  .live-actions {
+    flex: 1;
+    min-width: 0;
+    justify-content: flex-end;
+  }
+
+  .live-search {
+    flex: 1 1 auto;
+    width: auto;
+    max-width: 210px;
+    min-width: 0;
+  }
+
+  .live-action-btn {
+    display: none;
+  }
+
+  .page .channel-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 9px;
+  }
+}
+
+.tv-mode .live-head .page-title {
+  font-size: 24px;
+}
+
+.tv-mode .live-search {
+  width: 260px;
+}
+
+.tv-mode .live-search .input {
+  height: 42px;
+  font-size: 14px;
+}
+
+.tv-mode .page .channel-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
 }
 </style>

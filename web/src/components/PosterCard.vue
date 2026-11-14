@@ -12,7 +12,7 @@ const props = withDefaults(
     showSource?: boolean
     compact?: boolean
   }>(),
-  { progress: 0, showSource: true, compact: false }
+  { progress: 0, showSource: false, compact: false }
 )
 
 defineEmits<{ select: [item: PosterItem] }>()
@@ -86,6 +86,7 @@ function onError() {
         @error="onError"
       />
       <span v-if="props.showSource" class="poster-source">{{ props.item.sourceName }}</span>
+      <span v-if="props.item.remarks" class="poster-scrim" />
       <span v-if="props.item.remarks" class="poster-remarks">{{ props.item.remarks }}</span>
       <span v-if="props.progress > 0.02" class="poster-progress">
         <span :style="{ width: `${Math.min(100, props.progress * 100)}%` }" />
@@ -125,10 +126,10 @@ function onError() {
   position: relative;
   width: 100%;
   aspect-ratio: 2 / 3;
-  border-radius: 11px;
+  border-radius: 12px;
   overflow: hidden;
-  background: #232b28;
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: #1c2421;
+  border: 1px solid rgba(255, 255, 255, 0.07);
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28);
   transition:
     box-shadow 0.18s ease,
@@ -189,11 +190,32 @@ function onError() {
 .poster-source {
   left: 7px;
 }
+/* MarcoMovie：角标落在封面右下角，压在渐变蒙层上 */
 .poster-remarks {
-  right: 7px;
-  background: rgba(245, 245, 247, 0.94);
-  border-color: transparent;
-  color: #101013;
+  top: auto;
+  right: 8px;
+  bottom: 7px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: #fff;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.9);
+}
+.poster-scrim {
+  position: absolute;
+  z-index: 1;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 42%;
+  background: linear-gradient(180deg, transparent 0%, rgba(0, 0, 0, 0.66) 100%);
+  pointer-events: none;
 }
 .poster-progress {
   position: absolute;
@@ -220,9 +242,9 @@ function onError() {
   min-width: 0;
   max-width: 100%;
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 700;
   line-height: 1.35;
-  color: #f0f0f2;
+  color: #f5f7fa;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -231,7 +253,7 @@ function onError() {
   min-width: 0;
   max-width: 100%;
   font-size: 11px;
-  color: var(--muted-2);
+  color: #8e959e;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -293,38 +315,39 @@ function onError() {
 }
 
 .tv-mode .poster-title {
-  font-size: 16px;
+  font-size: 14px;
+  color: #c8c8d0;
 }
 
 .tv-mode .poster-sub {
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .tv-mode .poster-art {
-  border-radius: 12px;
+  border-radius: 10px;
+  background: #25252d;
 }
 
 @media (max-width: 720px) {
   .poster-art {
-    border-radius: 9px;
+    border-radius: 10px;
   }
   .poster-title {
-    font-size: 12px;
+    font-size: 12.5px;
   }
   .poster-meta {
     padding: 0 2px;
   }
-  .poster-source,
-  .poster-remarks {
+  .poster-source {
     font-size: 9px;
     padding: 3px 5px;
     top: 5px;
-  }
-  .poster-source {
     left: 5px;
   }
   .poster-remarks {
-    right: 5px;
+    right: 6px;
+    bottom: 6px;
+    font-size: 9.5px;
   }
 }
 </style>

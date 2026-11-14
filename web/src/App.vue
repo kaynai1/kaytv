@@ -45,13 +45,13 @@ const forcedUpdateUrl = computed(
   () => cloud.updateUrl || 'https://github.com/kaynai1/kaytv/releases/latest'
 )
 
-/* MarcoMovie 导航：桌面/TV 用右侧竖向玻璃 Dock，手机用底部悬浮四栏 */
+/* MarcoMovie TV：右侧纯图标玻璃栏，只有选中白点与聚焦气泡 */
 const railItems = [
   { to: '/', label: '首页', icon: 'home' },
   { to: '/search', label: '搜索', icon: 'search' },
-  { to: '/hot', label: '热门', icon: 'flame' },
   { to: '/live', label: '直播', icon: 'live' },
-  { to: '/favorites', label: '片库', icon: 'bookmark' },
+  { to: '/favorites', label: '收藏', icon: 'bookmark' },
+  { to: '/hot', label: '热门', icon: 'flame' },
   { to: '/settings', label: '设置', icon: 'settings' }
 ]
 
@@ -66,6 +66,9 @@ const ROOT_PAGES = new Set(['movies', 'live', 'hot', 'favorites'])
 
 const isAdmin = computed(() => route.meta.admin === true)
 const isAuthPage = computed(() => route.meta.auth === true)
+const hideDock = computed(
+  () => isAdmin.value || isAuthPage.value || route.name === 'detail' || route.name === 'search'
+)
 const showOffline = computed(
   () =>
     settings.checked &&
@@ -197,10 +200,6 @@ onBeforeUnmount(() => {
       class="mm-rail"
       aria-label="主导航"
     >
-      <RouterLink class="mm-rail-logo" to="/" data-nav aria-label="首页">
-        <AppIcon name="play" :size="20" />
-      </RouterLink>
-      <span class="mm-rail-line" />
       <RouterLink
         v-for="item in railItems"
         :key="item.to"
@@ -211,16 +210,15 @@ onBeforeUnmount(() => {
         data-nav
       >
         <span class="mm-rail-glyph">
-          <AppIcon :name="item.icon" :size="21" />
-          <span v-if="item.to === '/live'" class="mm-live-dot" />
-          <span v-else-if="item.to === '/favorites' && library.favorites.length" class="mm-count-dot" />
+          <AppIcon :name="item.icon" :size="22" />
         </span>
-        <span class="mm-rail-label">{{ item.label }}</span>
+        <span class="mm-rail-bubble">{{ item.label }}</span>
+        <span class="mm-rail-dot" />
       </RouterLink>
     </nav>
 
     <nav
-      v-if="!isAdmin && !isAuthPage"
+      v-if="!hideDock"
       class="mm-dock"
       aria-label="主导航"
     >
@@ -288,25 +286,25 @@ onBeforeUnmount(() => {
   font-weight: 600;
 }
 
-/* ---------- 右侧玻璃 Dock（桌面 / TV） ---------- */
+/* ---------- 右侧纯图标玻璃栏（桌面 / TV） ---------- */
 .mm-rail {
   position: fixed;
-  right: 16px;
+  right: 20px;
   top: 50%;
   transform: translateY(-50%);
   z-index: 60;
   display: none;
   flex-direction: column;
-  align-items: stretch;
-  gap: 3px;
-  width: 78px;
-  padding: 10px 8px;
-  border-radius: var(--radius-dock);
-  background: linear-gradient(180deg, rgba(30, 36, 33, 0.72), rgba(14, 18, 17, 0.74));
-  border: 1px solid var(--glass-border);
+  align-items: center;
+  gap: 2px;
+  width: 58px;
+  padding: 7px 4px;
+  border-radius: 25px;
+  background: linear-gradient(180deg, rgba(28, 32, 42, 0.86), rgba(16, 19, 25, 0.9));
+  border: 1px solid rgba(255, 255, 255, 0.14);
   box-shadow:
-    0 26px 64px rgba(0, 0, 0, 0.55),
-    inset 0 1px 0 rgba(255, 255, 255, 0.22);
+    0 22px 54px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2);
   backdrop-filter: blur(26px) saturate(1.5);
   -webkit-backdrop-filter: blur(26px) saturate(1.5);
 }
@@ -317,114 +315,101 @@ onBeforeUnmount(() => {
   }
 }
 
-.mm-rail-logo {
-  display: grid;
-  place-items: center;
-  width: 100%;
-  height: 44px;
-  margin-bottom: 2px;
-  border-radius: 16px;
-  color: #101013;
-  background: linear-gradient(160deg, #ffffff, #cfd4d2);
-  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.36);
-  outline: none;
-  text-decoration: none;
-}
-
-.mm-rail-line {
-  height: 1px;
-  margin: 4px 6px 6px;
-  background: rgba(255, 255, 255, 0.12);
-}
-
 .mm-rail-link {
   position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 3px;
-  min-height: 54px;
-  border-radius: 17px;
-  color: #a1a1aa;
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
+  display: grid;
+  place-items: center;
+  width: 50px;
+  height: 50px;
+  border-radius: 16px;
+  color: #9a9aa2;
   text-decoration: none;
   outline: none;
   transition:
     background 0.16s ease,
-    color 0.16s ease,
-    transform 0.16s ease;
+    color 0.16s ease;
 }
 
 .mm-rail-link:hover {
-  color: var(--text);
-  background: rgba(255, 255, 255, 0.07);
+  color: #fff;
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .mm-rail-link.on {
-  color: var(--text);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0.1));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28);
-}
-
-.mm-rail-link.on .mm-rail-glyph {
-  color: var(--accent);
+  color: #fff;
 }
 
 .mm-rail-glyph {
-  position: relative;
   display: grid;
   place-items: center;
 }
 
-.mm-rail-label {
-  line-height: 1.1;
-}
-
-.mm-live-dot,
-.mm-count-dot {
+.mm-rail-dot {
   position: absolute;
-  top: -2px;
-  right: -6px;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--live);
-  box-shadow: 0 0 0 2px rgba(10, 15, 13, 0.8);
+  left: -1px;
+  top: 50%;
+  width: 4px;
+  height: 16px;
+  margin-top: -8px;
+  border-radius: 999px;
+  background: #fff;
+  opacity: 0;
+  box-shadow: 0 0 8px rgba(255, 255, 255, 0.6);
 }
 
-.mm-count-dot {
-  background: var(--accent);
+.mm-rail-link.on .mm-rail-dot {
+  opacity: 1;
+}
+
+.mm-rail-bubble {
+  position: absolute;
+  right: calc(100% + 10px);
+  top: 50%;
+  transform: translate(4px, -50%) scale(0.96);
+  opacity: 0;
+  pointer-events: none;
+  padding: 6px 11px;
+  border-radius: 11px;
+  background: #e8252830;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: #fff;
+  font-size: 12.5px;
+  font-weight: 700;
+  white-space: nowrap;
+  transition:
+    opacity 0.14s ease,
+    transform 0.14s ease;
+}
+
+.mm-rail-link:hover .mm-rail-bubble,
+.mm-rail-link:focus-visible .mm-rail-bubble {
+  opacity: 1;
+  transform: translate(0, -50%) scale(1);
+}
+
+.mm-rail-link:focus-visible {
+  background: rgba(255, 255, 255, 0.92);
+  color: #101013;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.72);
+}
+
+.mm-rail-link:focus-visible .mm-rail-bubble {
+  background: #f5f5f7;
+  color: #101013;
+  border-color: transparent;
 }
 
 .tv-mode .mm-rail {
-  width: 92px;
-  padding: 12px 9px;
-  border-radius: 30px;
-}
-
-.tv-mode .mm-rail-logo {
-  height: 52px;
-  border-radius: 18px;
+  right: 24px;
+  width: 66px;
+  padding: 8px 5px;
+  border-radius: 28px;
 }
 
 .tv-mode .mm-rail-link {
-  min-height: 66px;
-  border-radius: 20px;
-  font-size: 12px;
-}
-
-.tv-mode .mm-rail-link:focus {
-  background: #f5f5f7;
-  color: #101013;
-  outline: 2px solid #fff;
-  outline-offset: 3px;
-}
-
-.tv-mode .mm-rail-link:focus .mm-rail-glyph {
-  color: #0a84ff;
+  width: 56px;
+  height: 56px;
+  border-radius: 18px;
 }
 
 /* ---------- 手机底部悬浮玻璃 Dock ---------- */
@@ -437,15 +422,15 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 2px;
-  width: min(288px, calc(100vw - 32px));
+  width: min(286px, calc(100vw - 32px));
   height: 64px;
   padding: 6px;
-  border-radius: var(--radius-dock);
-  background: linear-gradient(180deg, rgba(27, 33, 30, 0.88), rgba(12, 17, 15, 0.86));
-  border: 1px solid var(--glass-border);
+  border-radius: 26px;
+  background: linear-gradient(180deg, rgba(18, 26, 23, 0.82), rgba(8, 13, 11, 0.9));
+  border: 1px solid rgba(255, 255, 255, 0.16);
   box-shadow:
-    0 22px 54px rgba(0, 0, 0, 0.58),
-    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+    0 22px 54px rgba(0, 0, 0, 0.6),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22);
   backdrop-filter: blur(26px) saturate(1.55);
   -webkit-backdrop-filter: blur(26px) saturate(1.55);
 }
@@ -479,8 +464,10 @@ onBeforeUnmount(() => {
 .mm-dock-link.on {
   color: var(--accent);
   font-weight: 700;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0.1));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.3), rgba(255, 255, 255, 0.15));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.32);
 }
 
 .mm-dock-link:focus-visible {

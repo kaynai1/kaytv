@@ -478,6 +478,7 @@ onMounted(async () => {
     <div class="settings-grid">
       <section class="panel span-2">
         <div class="panel-head">
+          <span class="panel-badge tone-blue"><AppIcon name="server" :size="17" /></span>
           <div>
             <h2 class="panel-title">数据来源</h2>
             <p class="panel-desc">
@@ -563,6 +564,7 @@ onMounted(async () => {
 
       <section class="panel span-2 cloud-panel">
         <div class="panel-head">
+          <span class="panel-badge tone-cyan"><AppIcon name="external" :size="17" /></span>
           <div>
             <h2 class="panel-title">云后台</h2>
             <p class="panel-desc">
@@ -717,6 +719,7 @@ onMounted(async () => {
 
       <section class="panel">
         <div class="panel-head">
+          <span class="panel-badge tone-green"><AppIcon name="live" :size="17" /></span>
           <div>
             <h2 class="panel-title">直播源</h2>
             <p class="panel-desc">
@@ -795,6 +798,7 @@ onMounted(async () => {
 
       <section class="panel">
         <div class="panel-head">
+          <span class="panel-badge tone-blue"><AppIcon name="film" :size="17" /></span>
           <div>
             <h2 class="panel-title">影视源</h2>
             <p class="panel-desc">
@@ -882,6 +886,7 @@ onMounted(async () => {
 
       <section class="panel span-2">
         <div class="panel-head">
+          <span class="panel-badge tone-purple"><AppIcon name="link" :size="17" /></span>
           <div>
             <h2 class="panel-title">自定义 TVBox 接口</h2>
             <p class="panel-desc">
@@ -958,6 +963,7 @@ onMounted(async () => {
 
       <section v-if="settings.accessMode === 'login' || settings.currentUser" class="panel span-2">
         <div class="panel-head">
+          <span class="panel-badge tone-yellow"><AppIcon name="users" :size="17" /></span>
           <div>
             <h2 class="panel-title">观看账号</h2>
             <p class="panel-desc">
@@ -977,6 +983,7 @@ onMounted(async () => {
 
       <section class="panel">
         <div class="panel-head">
+          <span class="panel-badge tone-red"><AppIcon name="trash" :size="17" /></span>
           <div>
             <h2 class="panel-title">本机数据</h2>
             <p class="panel-desc">收藏 {{ favoriteCount }} 部 · 观看记录 {{ historyCount }} 条</p>
@@ -997,6 +1004,7 @@ onMounted(async () => {
 
       <section class="panel">
         <div class="panel-head">
+          <span class="panel-badge tone-orange"><AppIcon name="warn" :size="17" /></span>
           <div>
             <h2 class="panel-title">内容分级</h2>
             <p class="panel-desc">默认过滤片源里的成人分类与命名，收藏和历史里的内容不受影响</p>
@@ -1028,6 +1036,7 @@ onMounted(async () => {
 
       <section class="panel">
         <div class="panel-head">
+          <span class="panel-badge tone-cyan"><AppIcon name="refresh" :size="17" /></span>
           <div>
             <h2 class="panel-title">版本更新</h2>
             <p class="panel-desc">
@@ -1078,6 +1087,7 @@ onMounted(async () => {
 
       <section class="panel">
         <div class="panel-head">
+          <span class="panel-badge tone-orange"><AppIcon name="warn" :size="17" /></span>
           <div>
             <h2 class="panel-title">故障诊断</h2>
             <p class="panel-desc">片源打不开、海报加载失败时会留在这里，反馈问题时把它一起发出来</p>
@@ -1097,6 +1107,7 @@ onMounted(async () => {
 
       <section class="panel">
         <div class="panel-head">
+          <span class="panel-badge tone-gray"><AppIcon name="info" :size="17" /></span>
           <div>
             <h2 class="panel-title">关于 KayTV</h2>
             <p class="panel-desc">
@@ -1621,5 +1632,160 @@ a.btn {
   .import-actions {
     flex-wrap: wrap;
   }
+}
+
+/* ---------- MarcoMovie 手机版设置 ---------- */
+.settings-page {
+  padding: 12px 16px calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 30px);
+}
+.settings-page .page-head {
+  margin: 4px 0 18px;
+}
+.settings-page .page-title {
+  font-size: 32px;
+  font-weight: 800;
+  letter-spacing: -0.4px;
+}
+.settings-page .page-desc {
+  margin-top: 6px;
+  font-size: 13px;
+  color: #8e959e;
+}
+.settings-grid {
+  gap: 12px;
+}
+.panel {
+  border-radius: 28px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  padding: 18px 16px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.075), rgba(255, 255, 255, 0.032));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    0 12px 30px -18px rgba(0, 0, 0, 0.7);
+}
+.panel-head {
+  position: relative;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 0 12px;
+  margin-bottom: 16px;
+}
+.panel-head > div {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.panel-head > div > .panel-title {
+  padding-right: 128px;
+}
+.panel-badge {
+  margin-top: 1px;
+}
+.panel-badge {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.08);
+  color: #dfe6ea;
+}
+.panel-badge.tone-blue {
+  color: #7ab8ff;
+  background: rgba(10, 132, 255, 0.18);
+}
+.panel-badge.tone-cyan {
+  color: #7fe3ff;
+  background: rgba(90, 200, 250, 0.16);
+}
+.panel-badge.tone-green {
+  color: #7ef0c0;
+  background: rgba(110, 231, 183, 0.15);
+}
+.panel-badge.tone-purple {
+  color: #c4a6ff;
+  background: rgba(158, 119, 255, 0.16);
+}
+.panel-badge.tone-yellow {
+  color: #ffd479;
+  background: rgba(255, 204, 102, 0.15);
+}
+.panel-badge.tone-red {
+  color: #ff9a9a;
+  background: rgba(255, 107, 107, 0.16);
+}
+.panel-badge.tone-orange {
+  color: #ffb37a;
+  background: rgba(255, 159, 74, 0.16);
+}
+.panel-badge.tone-gray {
+  color: #c9d2d6;
+  background: rgba(255, 255, 255, 0.09);
+}
+.panel-title {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.1px;
+}
+.panel-desc {
+  margin-top: 3px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: #8e959e;
+}
+.panel-head .connection {
+  position: absolute;
+  top: 2px;
+  right: 0;
+  flex: none;
+  margin: 0;
+}
+.mode-card {
+  border-radius: 18px;
+  padding: 14px 14px 13px;
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.045);
+}
+.mode-card.active {
+  border-color: rgba(255, 255, 255, 0.5);
+  background: rgba(255, 255, 255, 0.1);
+}
+.mode-name {
+  font-size: 15px;
+  font-weight: 700;
+}
+.mode-desc {
+  font-size: 11.5px;
+  color: #8e959e;
+  line-height: 1.5;
+}
+.tv-mode .settings-page {
+  padding: 26px 118px 90px 34px;
+  max-width: 1480px;
+}
+.tv-mode .settings-page .page-head {
+  margin: 0 0 20px;
+}
+.tv-mode .settings-page .page-title {
+  font-size: 30px;
+}
+.tv-mode .settings-grid {
+  gap: 16px;
+}
+.tv-mode .panel {
+  border-radius: 22px;
+  padding: 22px;
+}
+.tv-mode .panel-head {
+  align-items: flex-start;
+  gap: 0 14px;
+}
+.tv-mode .panel-head .connection {
+  position: static;
+  margin: 0 0 0 auto;
+}
+.tv-mode .panel-head > div > .panel-title {
+  padding-right: 0;
 }
 </style>

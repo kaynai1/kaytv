@@ -54,7 +54,7 @@ const lineGroups = computed(() => {
   return groups
 })
 const content = computed(() => detail.value?.content || '')
-const canExpand = computed(() => content.value.length > 180)
+const canExpand = computed(() => content.value.length > 54)
 const resumeText = computed(() => {
   const entry = history.value
   if (!entry || entry.position < 10) return ''
@@ -177,11 +177,12 @@ watch(() => [sourceId.value, vodId.value].join('/'), load)
       <section class="dd-hero">
         <div class="dd-backdrop">
           <img
-            v-if="(detail.pic || posterUrl) && !posterFailed"
+            v-if="posterUrl && !posterFailed"
             :src="posterUrl"
             alt=""
             aria-hidden="true"
             referrerpolicy="no-referrer"
+            @error="onPosterError"
           />
           <span class="dd-fade" />
         </div>
@@ -191,7 +192,7 @@ watch(() => [sourceId.value, vodId.value].join('/'), load)
             <AppIcon name="back" :size="20" />
           </button>
           <div class="dd-top-actions">
-            <span class="dd-source">{{ detail.sourceName }}</span>
+            <span class="dd-source">⇄ {{ detail.sourceName }}</span>
             <button
               class="dd-circle"
               :class="{ on: isFavorite }"
@@ -205,36 +206,34 @@ watch(() => [sourceId.value, vodId.value].join('/'), load)
           </div>
         </div>
 
-        <div class="dd-poster">
-          <img
-            v-if="(detail.pic || posterUrl) && !posterFailed"
-            :src="posterUrl"
-            :alt="detail.name"
-            referrerpolicy="no-referrer"
-            @error="onPosterError"
-          />
-          <div v-else class="dd-poster-fallback">
-            {{ detail.name.slice(0, 1) }}
+        <div class="dd-hero-info">
+          <h1 class="dd-title">{{ detail.name }}</h1>
+
+          <div class="dd-meta">
+            <span v-if="detail.score" class="dd-score">{{ detail.score }}</span>
+            <span v-if="detail.year" class="dd-pill">{{ detail.year }}</span>
+            <span v-if="detail.typeName" class="dd-pill">{{ detail.typeName }}</span>
+            <span v-if="detail.area" class="dd-pill">{{ detail.area }}</span>
+            <span v-if="detail.remarks" class="dd-pill">{{ detail.remarks }}</span>
           </div>
+
+          <p class="dd-desc" :class="{ expanded: showFull }">
+            {{ content || '暂无简介' }}
+          </p>
+          <button
+            v-if="canExpand"
+            class="dd-expand"
+            data-nav
+            type="button"
+            @click="showFull = !showFull"
+          >
+            {{ showFull ? '收起' : '展开全部' }}
+            <AppIcon :name="showFull ? 'up' : 'down'" :size="14" />
+          </button>
         </div>
       </section>
 
       <div class="dd-body">
-        <h1 class="dd-title">{{ detail.name }}</h1>
-
-        <div class="dd-meta">
-          <span v-if="detail.score" class="dd-score">{{ detail.score }} 分</span>
-          <span v-if="detail.year" class="dd-pill">{{ detail.year }}</span>
-          <span v-if="detail.area" class="dd-pill">{{ detail.area }}</span>
-          <span v-if="detail.typeName" class="dd-pill">{{ detail.typeName }}</span>
-          <span v-if="detail.remarks" class="dd-pill accent">{{ detail.remarks }}</span>
-        </div>
-
-        <p v-if="detail.director || detail.actors" class="dd-credits">
-          <span v-if="detail.director">导演 {{ detail.director }}</span>
-          <span v-if="detail.actors">主演 {{ detail.actors }}</span>
-        </p>
-
         <div class="dd-play-row">
           <button class="dd-play" data-nav type="button" @click="play(true)">
             <AppIcon name="play" :size="18" />
@@ -243,19 +242,10 @@ watch(() => [sourceId.value, vodId.value].join('/'), load)
           <span v-if="resumeText" class="dd-resume">{{ resumeText }}</span>
         </div>
 
-        <p class="dd-desc" :class="{ expanded: showFull }">
-          {{ content || '暂无简介' }}
+        <p v-if="detail.director || detail.actors" class="dd-credits">
+          <span v-if="detail.director">导演 {{ detail.director }}</span>
+          <span v-if="detail.actors">主演 {{ detail.actors }}</span>
         </p>
-        <button
-          v-if="canExpand"
-          class="dd-expand"
-          data-nav
-          type="button"
-          @click="showFull = !showFull"
-        >
-          {{ showFull ? '收起' : '展开全部' }}
-          <AppIcon :name="showFull ? 'up' : 'down'" :size="14" />
-        </button>
 
         <section class="dd-episodes">
           <div class="dd-ep-head">
@@ -263,25 +253,26 @@ watch(() => [sourceId.value, vodId.value].join('/'), load)
             <span>共 {{ line?.episodes.length || 0 }} 集</span>
           </div>
 
-          <div v-if="detail.lines.length > 1" class="dd-lines">
-            <div v-for="group in lineGroups" :key="group.label" class="dd-line-group">
-              <span class="dd-line-label">{{ group.label }}</span>
-              <div class="chip-row line-row hide-scrollbar">
-                <button
-                  v-for="entry in group.entries"
-                  :key="`${entry.item.name}-${entry.index}`"
-                  class="chip"
-                  :class="{ active: activeLine === entry.index, official: entry.item.official }"
-                  data-nav
-                  type="button"
-                  @click="switchLine(entry.index)"
-                >
-                  {{ lineLabel(entry.item.name, entry.index) }}
-                  <span v-if="is4kLine(entry.item.name)" class="badge-4k">4K</span>
-                  <span class="count">{{ entry.item.episodes.length }}</span>
-                </button>
-              </div>
-            </div>
+          <div v-if="detail.lines.length > 1" class="dd-lines hide-scrollbar">
+            <button
+              v-for="(entry, index) in detail.lines"
+              :key="`${entry.name}-${index}`"
+              class="dd-line-card"
+              :class="{ on: activeLine === index, official: entry.official }"
+              data-nav
+              type="button"
+              @click="switchLine(index)"
+            >
+              <span class="dd-line-top">
+                <span class="dd-line-name">{{ lineLabel(entry.name, index) }}</span>
+                <span v-if="is4kLine(entry.name)" class="badge-4k">4K</span>
+              </span>
+              <span class="dd-line-count">{{ entry.episodes.length }} 集</span>
+              <span class="dd-line-state">
+                <AppIcon :name="activeLine === index ? 'check' : 'play'" :size="13" />
+                {{ activeLine === index ? '当前线路' : '切换线路' }}
+              </span>
+            </button>
           </div>
 
           <div v-if="line?.episodes.length" class="dd-ep-grid">
@@ -295,12 +286,12 @@ watch(() => [sourceId.value, vodId.value].join('/'), load)
                   history.lineIndex === activeLine &&
                   history.episodeIndex === index
               }"
+              :title="episode.name"
               data-nav
               type="button"
               @click="playEpisode(index)"
             >
-              <span class="dd-ep-num">{{ String(index + 1).padStart(2, '0') }}</span>
-              <span class="dd-ep-name">{{ episode.name }}</span>
+              <span class="dd-ep-num">{{ index + 1 }}</span>
             </button>
           </div>
 
@@ -842,5 +833,370 @@ watch(() => [sourceId.value, vodId.value].join('/'), load)
     height: 46px;
     font-size: 14px;
   }
+}
+
+/* ================= MarcoMovie full-bleed detail ================= */
+.detail-page {
+  width: 100%;
+  padding-bottom: calc(32px + env(safe-area-inset-bottom, 0px));
+}
+
+.dd-hero {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  min-height: 0;
+  height: clamp(500px, 80vh, 720px);
+  padding: calc(56px + var(--kaytv-safe-top, env(safe-area-inset-top, 0px))) 18px 22px;
+  overflow: hidden;
+}
+
+.dd-backdrop img {
+  filter: none;
+  transform: none;
+  object-position: center 18%;
+}
+
+.dd-fade {
+  background:
+    linear-gradient(180deg, rgba(6, 10, 8, 0.58) 0%, transparent 18%, rgba(6, 10, 8, 0.3) 40%, rgba(6, 10, 8, 0.9) 74%, #070c0a 100%),
+    radial-gradient(130% 78% at 50% 44%, transparent 34%, rgba(5, 9, 7, 0.62) 100%);
+}
+
+.dd-topbar {
+  top: calc(12px + var(--kaytv-safe-top, env(safe-area-inset-top, 0px)));
+  left: 16px;
+  right: 16px;
+  align-items: center;
+}
+
+.dd-source {
+  height: 40px;
+  padding: 0 14px;
+  background: rgba(10, 14, 12, 0.46);
+  font-size: 12.5px;
+  gap: 4px;
+}
+
+.dd-circle {
+  width: 40px;
+  height: 40px;
+}
+
+.dd-hero-info {
+  position: relative;
+  z-index: 2;
+  width: min(680px, 100%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.dd-title {
+  margin: 0;
+  font-size: 28px;
+  line-height: 1.16;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-shadow: 0 6px 30px rgba(0, 0, 0, 0.6);
+}
+
+.dd-meta {
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.dd-score {
+  height: 25px;
+  padding: 0 10px;
+  font-size: 11px;
+}
+
+.dd-pill {
+  height: 25px;
+  padding: 0 9px;
+  font-size: 11px;
+  background: rgba(10, 14, 12, 0.42);
+}
+
+.dd-desc {
+  margin: 12px 0 0;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: #d8dcda;
+  font-size: 13.5px;
+  line-height: 1.72;
+  text-align: center;
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.6);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.dd-desc.expanded {
+  display: block;
+  overflow: visible;
+}
+
+.dd-expand {
+  margin-top: 4px;
+  color: #d8dcda;
+  font-size: 11.5px;
+  opacity: 0.8;
+}
+
+.dd-body {
+  width: min(760px, 100%);
+  margin: 0 auto;
+  padding: 14px 16px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  text-align: left;
+}
+
+.dd-play-row {
+  width: 100%;
+  margin-top: 0;
+  gap: 8px;
+}
+
+.dd-play {
+  width: 100%;
+  height: 48px;
+  min-width: 0;
+  border-radius: 999px;
+  font-size: 14.5px;
+  font-weight: 800;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.42);
+}
+
+.dd-resume {
+  text-align: center;
+  font-size: 11px;
+}
+
+.dd-credits {
+  margin: 14px 0 0;
+  justify-content: flex-start;
+  gap: 2px 14px;
+  font-size: 11.5px;
+  color: #8e959e;
+}
+
+.dd-episodes {
+  margin-top: 24px;
+}
+
+.dd-ep-head {
+  margin-bottom: 12px;
+}
+
+.dd-ep-head h2 {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.dd-lines {
+  display: flex;
+  gap: 10px;
+  margin: 0 -16px;
+  padding: 2px 16px 12px;
+  overflow-x: auto;
+}
+
+.dd-line-card {
+  position: relative;
+  flex: 0 0 224px;
+  height: 126px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 14px;
+  background: linear-gradient(160deg, rgba(32, 42, 37, 0.9), rgba(15, 22, 19, 0.94));
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  outline: none;
+}
+
+.dd-line-card.on {
+  border-color: rgba(255, 255, 255, 0.92);
+  background: linear-gradient(160deg, rgba(52, 64, 58, 0.9), rgba(20, 28, 24, 0.95));
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.4);
+}
+
+.dd-line-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+
+.dd-line-name {
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dd-line-count {
+  font-size: 12px;
+  color: #8e959e;
+}
+
+.dd-line-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #c7c7cf;
+}
+
+.dd-line-card.on .dd-line-state {
+  color: #fff;
+}
+
+.dd-ep-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(44px, 1fr));
+  gap: 8px;
+}
+
+.dd-ep {
+  aspect-ratio: auto;
+  height: 32px;
+  padding: 0;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.dd-ep:hover {
+  transform: none;
+  background: rgba(255, 255, 255, 0.14);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.dd-ep-num {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #d8dcda;
+}
+
+.dd-ep.watched {
+  background: #f5f5f7;
+  border-color: transparent;
+}
+
+.dd-ep.watched .dd-ep-num {
+  color: #101013;
+}
+
+.dd-foot {
+  margin: 26px 0 0;
+  text-align: left;
+}
+
+@media (min-width: 900px) {
+  .dd-hero {
+    height: clamp(520px, 78vh, 760px);
+    padding-top: 78px;
+  }
+  .dd-title {
+    font-size: 34px;
+  }
+  .dd-desc {
+    font-size: 14px;
+  }
+  .dd-body {
+    padding: 18px 20px 0;
+  }
+  .dd-line-card {
+    flex-basis: 244px;
+  }
+}
+
+.tv-mode .detail-page {
+  width: calc(100% + var(--rail-w));
+  max-width: none;
+  margin-right: calc(-1 * var(--rail-w));
+}
+
+.tv-mode .dd-hero {
+  height: 76vh;
+  align-items: flex-start;
+  padding: 90px calc(var(--rail-w) + 48px) 40px 48px;
+}
+
+.tv-mode .dd-topbar {
+  right: calc(var(--rail-w) + 24px);
+}
+
+.tv-mode .dd-hero-info {
+  align-items: flex-start;
+  text-align: left;
+  width: min(900px, 100%);
+}
+
+.tv-mode .dd-title {
+  font-size: 42px;
+}
+
+.tv-mode .dd-meta {
+  justify-content: flex-start;
+}
+
+.tv-mode .dd-desc {
+  text-align: left;
+  -webkit-line-clamp: 3;
+  font-size: 14.5px;
+  width: min(760px, 100%);
+}
+
+.tv-mode .dd-body {
+  width: min(1100px, 100%);
+  padding: 24px calc(var(--rail-w) + 48px) 0 48px;
+}
+
+.tv-mode .dd-play {
+  width: auto;
+  min-width: 240px;
+  height: 46px;
+  font-size: 15px;
+}
+
+.tv-mode .dd-play-row {
+  align-items: flex-start;
+}
+
+.tv-mode .dd-line-card {
+  flex-basis: 260px;
+  height: 138px;
+}
+
+.tv-mode .dd-ep-grid {
+  grid-template-columns: repeat(auto-fill, minmax(48px, 1fr));
+  gap: 10px;
+}
+
+.tv-mode .dd-ep {
+  height: 40px;
 }
 </style>

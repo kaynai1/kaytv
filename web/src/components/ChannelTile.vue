@@ -47,27 +47,31 @@ const is4k = computed(() => /4k|2160|uhd|超高清/i.test(props.channel.name))
       />
       <span v-if="is4k" class="channel-4k">4K</span>
     </span>
-    <span class="channel-name">{{ props.channel.name }}</span>
-    <span v-if="props.now" class="channel-now">{{ props.now }}</span>
-    <span v-else class="channel-group">{{ props.channel.group }}</span>
+    <span class="channel-meta">
+      <span class="channel-name">{{ props.channel.name }}</span>
+      <span v-if="props.now" class="channel-now">{{ props.now }}</span>
+      <span v-else class="channel-group">{{ props.channel.group }}</span>
+    </span>
   </button>
 </template>
 
 <style scoped>
 .channel-tile {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   min-width: 0;
   /* button 默认按内容收缩，节目名一长就会盖住旁边的台 */
   width: 100%;
   overflow: hidden;
-  padding: 14px 10px 11px;
-  border-radius: 4px;
-  border: 1px solid transparent;
-  background: var(--surface);
+  padding: 10px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: linear-gradient(180deg, rgba(24, 33, 29, 0.82), rgba(13, 20, 17, 0.9));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
   color: var(--text);
+  text-align: left;
   transition:
     transform 0.18s ease,
     background 0.18s ease,
@@ -76,20 +80,21 @@ const is4k = computed(() => /4k|2160|uhd|超高清/i.test(props.channel.name))
 }
 @media (hover: hover) {
   .channel-tile:hover {
-    transform: translateY(-2px);
-    background: var(--surface-2);
-    border-color: var(--line);
+    transform: translateY(-1px);
+    background: rgba(255, 255, 255, 0.1);
+    border-color: rgba(255, 255, 255, 0.18);
   }
 }
 .channel-logo {
   position: relative;
-  width: 58px;
-  height: 58px;
+  flex: none;
+  width: 40px;
+  height: 40px;
   display: grid;
   place-items: center;
-  border-radius: 4px;
+  border-radius: 11px;
   overflow: hidden;
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(255, 255, 255, 0.05);
 }
 .channel-logo img {
   position: absolute;
@@ -97,70 +102,87 @@ const is4k = computed(() => /4k|2160|uhd|超高清/i.test(props.channel.name))
   width: 100%;
   height: 100%;
   object-fit: contain;
+  padding: 4px;
 }
 .channel-initial {
   width: 100%;
   height: 100%;
   display: grid;
   place-items: center;
-  font-size: 18px;
-  font-weight: 600;
+  font-size: 14px;
+  font-weight: 700;
 }
 .channel-4k {
   position: absolute;
-  right: 3px;
-  bottom: 3px;
-  padding: 0 4px;
+  right: 1px;
+  bottom: 1px;
+  padding: 0 3px;
   border-radius: 3px;
   background: rgba(8, 16, 28, 0.9);
   border: 1px solid rgba(154, 215, 255, 0.55);
   color: #9ad7ff;
-  font-size: 8.5px;
+  font-size: 7.5px;
   font-weight: 800;
-  line-height: 13px;
+  line-height: 11px;
   letter-spacing: 0.3px;
+}
+.channel-meta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
 }
 .channel-name {
   width: 100%;
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 700;
   line-height: 1.25;
-  text-align: center;
+  text-align: left;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.channel-group {
+.channel-group,
+.channel-now {
   width: 100%;
-  font-size: 10.5px;
-  color: var(--muted);
-  text-align: center;
+  font-size: 11px;
+  color: #8e959e;
+  text-align: left;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .channel-tile.active {
   border-color: rgba(255, 255, 255, 0.5);
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.1);
 }
 .channel-tile.active .channel-name {
   color: #fff;
   font-weight: 700;
 }
 .channel-tile:focus {
-  transform: translateY(-2px) scale(1.02);
-  background: var(--surface-2);
-  border-color: transparent;
+  transform: translateY(-1px) scale(1.01);
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.7);
   outline: 3px solid var(--accent);
   outline-offset: 2px;
 }
-.channel-now {
-  width: 100%;
-  font-size: 10.5px;
-  color: #d2d2d2;
-  text-align: center;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.tv-mode .channel-tile {
+  padding: 12px;
+  border-radius: 16px;
+  gap: 12px;
+}
+.tv-mode .channel-logo {
+  width: 48px;
+  height: 48px;
+  border-radius: 13px;
+}
+.tv-mode .channel-name {
+  font-size: 15px;
+}
+.tv-mode .channel-group,
+.tv-mode .channel-now {
+  font-size: 12px;
 }
 </style>

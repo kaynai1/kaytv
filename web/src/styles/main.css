@@ -109,7 +109,42 @@ img {
   display: flex;
   flex-direction: column;
   z-index: 1;
-  background: var(--bg);
+  background: transparent;
+  isolation: isolate;
+}
+
+/* MarcoMovie 手机/桌面：祖母绿曜石底 + 顶部青色辉光 + 上下暗角 */
+.app-shell::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(120% 62% at 50% 13%, rgba(44, 110, 82, 0.24), rgba(20, 60, 45, 0.1) 55%, transparent 100%),
+    linear-gradient(180deg, #11241c 0%, #0b1612 52%, #060a08 100%);
+}
+
+.app-shell::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    linear-gradient(180deg, rgba(13, 28, 22, 0.85) 0%, transparent 16%),
+    linear-gradient(0deg, rgba(4, 8, 6, 0.9) 0%, transparent 22%);
+}
+
+/* MarcoMovie TV：中性曜石底 + 顶部冷灰环境光 */
+.app-shell.tv-mode::before {
+  background:
+    linear-gradient(180deg, rgba(32, 36, 46, 0.55) 0%, transparent 34%),
+    linear-gradient(180deg, #17191f 0%, #101013 46%, #101013 100%);
+}
+
+.app-shell.tv-mode::after {
+  background: linear-gradient(0deg, rgba(0, 0, 0, 0.35) 0%, transparent 18%);
 }
 
 .app-main {

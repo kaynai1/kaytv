@@ -46,7 +46,10 @@ const top10 = computed(() => top.value.slice(0, 10))
 const rest = computed(() => top.value.slice(10))
 
 const tmdbOff = ref<Record<string, boolean>>({})
+const artFailed = ref<Record<string, true>>({})
+
 function artSrc(item: VodItem): string {
+  if (artFailed.value[`${item.sourceId}:${item.id}`]) return ''
   const key = tmdbKey(item.name, item.year)
   if (!tmdbOff.value[key]) {
     const url = tmdbPosterUrl(tmdbArts[key], 'w500')
@@ -57,9 +60,12 @@ function artSrc(item: VodItem): string {
 function artError(item: VodItem) {
   const key = tmdbKey(item.name, item.year)
   const url = tmdbPosterUrl(tmdbArts[key], 'w500')
-  if (tmdbOff.value[key] || !url) return
-  if (tmdbSwapImageHost(url)) return
-  tmdbOff.value = { ...tmdbOff.value, [key]: true }
+  if (!tmdbOff.value[key] && url) {
+    if (tmdbSwapImageHost(url)) return
+    tmdbOff.value = { ...tmdbOff.value, [key]: true }
+    return
+  }
+  artFailed.value = { ...artFailed.value, [`${item.sourceId}:${item.id}`]: true }
 }
 watch(
   top,
@@ -707,6 +713,33 @@ watch(tab, () => {
   .rest-score {
     min-width: 30px;
     font-size: 13px;
+  }
+}
+
+/* MarcoMovie 手机版页头 */
+@media (max-width: 899px) {
+  .hot-page .page-head {
+    flex-direction: row;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px 10px;
+  }
+  .hot-page .page-title {
+    font-size: 22px;
+    font-weight: 800;
+    color: #f5f5f7;
+  }
+  .hot-page .page-desc {
+    display: none;
+  }
+  .hot-page .page-actions {
+    margin-left: auto;
+    gap: 8px;
+  }
+  .hot-page .page-actions .btn {
+    height: 34px;
+    padding: 0 12px;
+    font-size: 12px;
   }
 }
 </style>
