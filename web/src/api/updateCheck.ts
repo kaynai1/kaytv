@@ -5,7 +5,9 @@ const REPO = 'kaynai1/kaytv'
 const LATEST_API = `https://api.github.com/repos/${REPO}/releases/latest`
 const RELEASE_PAGE = `https://github.com/${REPO}/releases/latest`
 export const latestReleaseUrl = RELEASE_PAGE
-const REQUEST_TIMEOUT = 9000
+const REQUEST_TIMEOUT = 8000
+// GitHub 接口在国内偶尔直接 403/超时，加速线路走代理服务器自己的配额
+const API_SOURCES = [LATEST_API, `https://gh-proxy.com/${LATEST_API}`]
 
 export type UpdateAsset = { name: string; url: string; size: number }
 
@@ -15,6 +17,37 @@ export interface UpdateInfo {
   note: string
   publishedAt: string
   assets: UpdateAsset[]
+}
+
+interface GithubRelease {
+  tag_name?: string
+  html_url?: string
+  body?: string
+  published_at?: string
+  assets?: { name?: string; browser_download_url?: string; size?: number }[]
+}
+
+async function fetchLatestRelease(): Promise<GithubRelease> {
+  let lastMessage = ''
+  for (const source of API_SOURCES) {
+    const controller = new AbortController()
+    const timer = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT)
+    try {
+      const response = await fetch(source, {
+        headers: { accept: 'application/vnd.github+json' },
+        signal: controller.signal,
+        cache: 'no-store'
+      })
+      if (!response.ok) throw new Error(`GitHub 返回 HTTP ${response.status}`)
+      return (await response.json()) as GithubRelease
+    } catch (error) {
+      lastMessage =
+        error instanceof DOMException && error.name === 'AbortError' ? '检查更新超时' : String((error as Error).message || error)
+    } finally {
+      window.clearTimeout(timer)
+    }
+  }
+  throw new Error(`检查更新失败，GitHub 接口和加速线路都没连上（${lastMessage || '网络异常'}）`)
 }
 
 export const updateState = reactive<{
@@ -67,21 +100,8 @@ export async function checkForUpdate(options: { silent?: boolean } = {}): Promis
   if (updateState.checking) return updateState.info
   updateState.checking = true
   if (!options.silent) updateState.error = ''
-  const controller = new AbortController()
-  const timer = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT)
   try {
-    const response = await fetch(LATEST_API, {
-      headers: { accept: 'application/vnd.github+json' },
-      signal: controller.signal
-    })
-    if (!response.ok) throw new Error(`GitHub 返回 HTTP ${response.status}`)
-    const payload = (await response.json()) as {
-      tag_name?: string
-      html_url?: string
-      body?: string
-      published_at?: string
-      assets?: { name?: string; browser_download_url?: string; size?: number }[]
-    }
+    const payload = await fetchLatestRelease()
     const info: UpdateInfo = {
       version: String(payload.tag_name || '').replace(/^v/i, ''),
       page: payload.html_url || RELEASE_PAGE,
@@ -104,13 +124,11 @@ export async function checkForUpdate(options: { silent?: boolean } = {}): Promis
     return info
   } catch (error) {
     /* 静默检查失败不打扰用户，只在设置页里留原因 */
-    const message =
-      error instanceof DOMException && error.name === 'AbortError' ? '检查更新超时' : String((error as Error).message || error)
+    const message = String((error as Error).message || error)
     if (!options.silent) updateState.error = message
     logEvent('update', `检查更新失败：${message}`)
     return null
   } finally {
-    window.clearTimeout(timer)
     updateState.checking = false
     updateState.checkedOnce = true
   }
