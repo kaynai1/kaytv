@@ -94,3 +94,22 @@ if (xml.includes('android:banner="@drawable/tv_banner"')) {
 
 fs.writeFileSync(manifestPath, xml)
 console.log(`[kaytv] AndroidManifest.xml 已切换为 ${device} 形态（${orientation}）`)
+
+/*
+ * 设备形态同时写进网页入口：盒子即使给 WebView 上报了触摸能力，
+ * 客户端也能据此直接进大屏模式，不再依赖 pointer/maxTouchPoints 去猜。
+ */
+const indexPath = path.resolve('android', 'app', 'src', 'main', 'assets', 'public', 'index.html')
+if (fs.existsSync(indexPath)) {
+  let html = fs.readFileSync(indexPath, 'utf8')
+  html = html.replace(/\s*<meta name="kaytv-device"[^>]*>/g, '')
+  html = html.replace(
+    /<head(\s[^>]*)?>/i,
+    (match) => `${match}\n    <meta name="kaytv-device" content="${device}" />`
+  )
+  fs.writeFileSync(indexPath, html)
+  console.log(`[kaytv] index.html 已写入设备标记 kaytv-device=${device}`)
+} else {
+  console.error(`[kaytv] 找不到 ${indexPath}，设备标记未写入（请先执行 npm run sync）`)
+  process.exit(1)
+}

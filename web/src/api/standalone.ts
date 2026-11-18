@@ -10,6 +10,7 @@ import type {
 } from '../types'
 import { findCustomLive, findCustomVod, listCustom } from './customSources'
 import { logEvent } from './diagnostics'
+import { deviceSupportsHevc } from './runtime'
 
 interface LocalSource {
   id: string
@@ -877,7 +878,8 @@ async function kanjuSearch(source: LocalSource, keyword: string): Promise<VodIte
 
 function qualityScore(label: string): number {
   const text = String(label || '').toLowerCase()
-  if (/4k|2160|ai4k/.test(text)) return 500
+  // 4K 线路基本是 H.265，电视盒子解不了时只有声音没有画面，这种设备上让 1080P 先顶上来
+  if (/4k|2160|ai4k/.test(text)) return deviceSupportsHevc() ? 500 : 90
   if (/1080/.test(text)) return 400
   if (/高清|蓝光|bluray|原画/.test(text)) return 320
   if (/720/.test(text)) return 200

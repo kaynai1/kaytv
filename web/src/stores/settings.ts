@@ -106,7 +106,7 @@ export const useSettingsStore = defineStore('settings', {
       standalone: persisted.mode === 'standalone' && runtime.packaged,
       disabledLive: persisted.disabledLive,
       disabledVod: persisted.disabledVod,
-      tvMode: persisted.tvMode,
+      tvMode: runtime.device === 'tv' ? true : persisted.tvMode,
       tvModeTouched: persisted.tvModeTouched,
       adultFilter: persisted.adultFilter,
       siteName: 'KayTV',
@@ -314,6 +314,11 @@ export const useSettingsStore = defineStore('settings', {
     },
     /** 盒子/电视棒没有触屏，首次启动自动进大屏模式，用户手动改过之后不再干预 */
     autoTvMode() {
+      // 电视 APK 里由打包脚本写了设备标记：不管旧版存过什么，启动默认就是大屏
+      if (runtime.device === 'tv') {
+        this.tvMode = true
+        return
+      }
       if (this.tvModeTouched) return
       const coarse = typeof window.matchMedia === 'function' ? window.matchMedia('(pointer: coarse)').matches : false
       const noTouch = (navigator.maxTouchPoints || 0) === 0 && !coarse

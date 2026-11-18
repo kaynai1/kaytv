@@ -1554,10 +1554,77 @@ img {
 /* 电视盒子 GPU 弱：毛玻璃和大图高斯模糊每帧重算会卡到点不动 */
 .tv-mode .app-header,
 .tv-mode .player-overlay *,
+.player-overlay.tv-mode *,
 .tv-mode .modal-mask,
 .tv-mode .force-update {
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
+}
+
+/* 播放器被 Teleport 到 body，拿不到 .app-shell 上的 tv-mode，自己挂一份样式 */
+.player-overlay.tv-mode [data-nav]:focus {
+  outline: 3px solid #f5f5f7;
+  outline-offset: 3px;
+  box-shadow: 0 0 0 8px rgba(245, 245, 247, 0.16);
+  transform: scale(1.06);
+}
+
+/* TV 播放器控件整体放大，1080p 上遥控器才点得准、看得清 */
+.player-overlay.tv-mode .player-btn {
+  height: 54px;
+  padding: 0 20px;
+  font-size: 15px;
+  border-radius: 14px;
+}
+.player-overlay.tv-mode .player-btn.round {
+  width: 54px;
+  padding: 0;
+  border-radius: 50%;
+}
+.player-overlay.tv-mode .player-btn.round.small {
+  width: 46px;
+  height: 46px;
+}
+.player-overlay.tv-mode .player-btn.round.tiny {
+  width: 34px;
+  height: 34px;
+}
+.player-overlay.tv-mode .player-btn.pill {
+  height: 48px;
+}
+.player-overlay.tv-mode .player-title-line h2 {
+  font-size: clamp(22px, 2vw, 30px);
+}
+.player-overlay.tv-mode .player-progress {
+  height: 26px;
+}
+.player-overlay.tv-mode .progress-track,
+.player-overlay.tv-mode .progress-fill {
+  height: 7px;
+}
+.player-overlay.tv-mode .progress-knob {
+  width: 17px;
+  height: 17px;
+  margin-left: -8px;
+}
+.player-overlay.tv-mode .volume-track::before,
+.player-overlay.tv-mode .volume-fill {
+  height: 6px;
+}
+.player-overlay.tv-mode .player-hint {
+  font-size: 12.5px;
+}
+.player-overlay.tv-mode .player-error-card {
+  width: min(640px, 100%);
+}
+.player-overlay.tv-mode .player-error-card h3 {
+  font-size: 24px;
+}
+.player-overlay.tv-mode .player-error-card p {
+  font-size: 16px;
+}
+.player-overlay.tv-mode .player-error-card .player-error-meta {
+  font-size: 13.5px;
 }
 
 .tv-mode .hero .hero-ambient,

@@ -6,7 +6,7 @@ import { useLibraryStore } from '../stores/library'
 import { useCloudStore } from '../stores/cloud'
 import { toast } from '../composables/useToast'
 import AppIcon from '../components/AppIcon.vue'
-import { runtime } from '../api/runtime'
+import { deviceSupportsHevc, runtime } from '../api/runtime'
 import { probeLiveSource, probeVodSource, rememberHealth } from '../api/standalone'
 import { copyText, diagnosticsText, recentEvents } from '../api/diagnostics'
 import { checkForUpdate, hasUpdate, latestReleaseUrl, openExternal, preferredAsset, updateState } from '../api/updateCheck'
@@ -232,11 +232,13 @@ function switchAdultFilter() {
 const diagCopied = ref(false)
 const releaseQr = ref('')
 const updateAsset = computed(() =>
-  updateState.info ? preferredAsset(updateState.info.assets, settings.tvMode) : null
+  updateState.info
+    ? preferredAsset(updateState.info.assets, settings.tvMode || runtime.device === 'tv')
+    : null
 )
 const platformLabel = computed(() => {
   const os = navigator.userAgent
-  if (settings.tvMode || /smarttv|braviatv|googletv|hbbtv|aft/i.test(os)) return 'Android TV'
+  if (settings.tvMode || runtime.device === 'tv' || /smarttv|braviatv|googletv|hbbtv|aft/i.test(os)) return 'Android TV'
   if (/android/i.test(os)) return 'Android 手机'
   if (/iphone|ipad|ipod/i.test(os)) return 'iOS'
   if (/windows nt/i.test(os)) return 'Windows'
@@ -326,9 +328,12 @@ async function downloadUpdate() {
 
 async function copyDiag() {
   const text = diagnosticsText({
+    设备形态:
+      runtime.device === 'tv' ? '电视版' : runtime.device === 'phone' ? '手机版' : '桌面/浏览器',
     影视源: `${enabledSources('vod').length}/${settings.vodSources.length} 个启用`,
     直播源: `${enabledSources('live').length}/${settings.liveSources.length} 个启用`,
     大屏模式: settings.tvMode ? '开' : '关',
+    H265解码: deviceSupportsHevc() ? '支持' : '不支持',
     成人过滤: settings.adultFilter ? '开' : '关'
   })
   diagCopied.value = await copyText(text)

@@ -55,6 +55,8 @@ const RATES = [0.5, 0.75, 1, 1.25, 1.5, 2, 3]
 const SKIP_STEPS = [0, 5, 10, 15, 30, 60]
 let introSkipped = false
 let outroFired = false
+let audioOnlySince = 0
+let audioOnlyTried = false
 
 let hls: Hls | null = null
 let hlsLib: typeof import('hls.js').default | null = null
@@ -123,7 +125,9 @@ const liveLineText = computed(() => {
   return `线路 ${(player.live?.lineIndex || 0) + 1}/${total}`
 })
 const clockText = computed(() => formatClock(position.value))
-const durationText = computed(() => formatClock(duration.value))
+const durationText = computed(() =>
+  Number.isFinite(duration.value) ? formatClock(duration.value) : '--:--'
+)
 const progressWidth = computed(() => {
   if (!duration.value) return 0
   return Math.min(100, (position.value / duration.value) * 100)
@@ -515,6 +519,14 @@ function showError(message: string) {
     if (channel) liveStore.reportDown(channel, message)
   }
   wake()
+  // 电视端没有鼠标，出错后焦点直接落到「重试当前线路」，遥控器按确认就能重来
+  if (settings.tvMode) {
+    void nextTick(() => {
+      root.value
+        ?.querySelector<HTMLElement>('.player-error-actions .btn.primary')
+        ?.focus({ preventScroll: true })
+    })
+  }
 }
 
 function setAudioTrack(index: number) {
@@ -587,6 +599,8 @@ async function attach() {
   element.defaultPlaybackRate = rate.value
   introSkipped = false
   outroFired = false
+  audioOnlySince = 0
+  audioOnlyTried = false
   error.value = ''
   waiting.value = true
   duration.value = 0
@@ -769,6 +783,7 @@ function onTimeUpdate() {
   const element = video.value
   if (!element) return
   position.value = element.currentTime || 0
+  detectAudioOnly(element)
   if (!isLive.value && element.duration) {
     duration.value = element.duration
     handleSkip(element)
@@ -777,6 +792,34 @@ function onTimeUpdate() {
     saveMark = element.currentTime
     saveProgress(false)
   }
+}
+
+/**
+ * 电视盒子的 WebView 解不了 H.265 时常见「只有声音、画面全黑」：
+ * 音频在走，但视频轨宽度一直是 0。连续 5 秒没画面就按线路故障处理，
+ * 自动换线/换源；全换完还黑就明确报错，不再无声黑屏。
+ */
+function detectAudioOnly(element: HTMLVideoElement) {
+  if (audioOnlyTried || error.value || element.readyState < 2) return
+  if (element.videoWidth > 0 || element.currentTime < 4) {
+    audioOnlySince = 0
+    return
+  }
+  if (!audioOnlySince) {
+    audioOnlySince = Date.now()
+    return
+  }
+  if (Date.now() - audioOnlySince < 5000) return
+  audioOnlyTried = true
+  const message = '这个片源只有声音没有画面（多为 H.265/4K 线路解码不支持）'
+  void (async () => {
+    if (await handleFailure()) {
+      toast.info(`${message}，已自动切换线路`)
+      wake()
+      return
+    }
+    showError(`${message}，换片源或清晰度再试`)
+  })()
 }
 
 function saveProgress(force: boolean) {
@@ -1644,6 +1687,7 @@ function wake() {
   if (drawerOpen.value || error.value || menu.value) return
   // 手机暂停后控件也要收起，只留中间的大播放键；电脑/TV 暂停时保持原来的常驻控件
   if (!playing.value && !phoneGestures.value) return
+  // 电视盒子首帧和缓冲都慢，控件留久一点，别刚出声界面就没了
   hideTimer = window.setTimeout(() => {
     // 遥控器还停在控制条上时先别收，否则焦点会被一起藏掉
     if (controlsFocused()) {
@@ -1651,7 +1695,7 @@ function wake() {
       return
     }
     controlsVisible.value = false
-  }, 3800)
+  }, settings.tvMode ? 6000 : 3800)
 }
 
 /** 焦点是否落在播放器内的按钮/列表上（视频画面本身不算） */
@@ -1684,6 +1728,8 @@ function goBack() {
 
 function onKeydown(event: KeyboardEvent) {
   if (!player.open) return
+  // 遥控器按任意键都先把控件叫回来，否则控件一收，用户会以为界面没反应
+  if (settings.tvMode) wake()
   const target = event.target as HTMLElement | null
   const inputType = target?.tagName === 'INPUT' ? (target as HTMLInputElement).type.toLowerCase() : ''
   const typing =
@@ -2052,7 +2098,7 @@ onBeforeUnmount(() => {
       v-if="player.open"
       ref="root"
       class="player-overlay"
-      :class="{ 'controls-idle': !controlsVisible || drawerOpen, sheet: sheetMode }"
+      :class="{ 'controls-idle': !controlsVisible || drawerOpen, sheet: sheetMode, 'tv-mode': settings.tvMode }"
       tabindex="-1"
       data-nav-scope
       @mousemove="onOverlayMove"
@@ -2130,11 +2176,11 @@ onBeforeUnmount(() => {
             来源 {{ hostOf(player.currentUrl) || '未知地址' }} · 已自动重试 {{ recoveries }} 次
           </p>
           <div class="player-error-actions">
-            <button class="btn primary" @click="retryPlayback">重试当前线路</button>
-            <button class="btn" @click="openDrawer(isLive ? 'list' : 'sources')">{{ isLive ? '切换频道' : '线路与片源' }}</button>
-            <button v-if="!isLive" class="btn" @click="void switchSourceNow()">换个片源</button>
-            <button class="btn ghost" @click="void copyPlaybackUrl()">复制播放地址</button>
-            <button class="btn ghost" @click="closePlayer">关闭</button>
+            <button class="btn primary" data-nav @click="retryPlayback">重试当前线路</button>
+            <button class="btn" data-nav @click="openDrawer(isLive ? 'list' : 'sources')">{{ isLive ? '切换频道' : '线路与片源' }}</button>
+            <button v-if="!isLive" class="btn" data-nav @click="void switchSourceNow()">换个片源</button>
+            <button class="btn ghost" data-nav @click="void copyPlaybackUrl()">复制播放地址</button>
+            <button class="btn ghost" data-nav @click="closePlayer">关闭</button>
           </div>
         </div>
       </div>
